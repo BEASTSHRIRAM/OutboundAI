@@ -39,7 +39,11 @@ export function Integrations() {
                 const connectedMap = new Map();
 
                 if (data && data.integrations) {
-                    data.integrations.forEach((conn: any) => {
+                    interface IntegrationConnection {
+                        name: string;
+                        [key: string]: unknown;
+                    }
+                    data.integrations.forEach((conn: IntegrationConnection) => {
                         connectedMap.set(conn.name.toLowerCase(), conn);
                     });
                 }
@@ -61,6 +65,13 @@ export function Integrations() {
                     return integration;
                 });
 
+                // Sort: Connected first, then alphabetical
+                mergedIntegrations.sort((a, b) => {
+                    if (a.status === "connected" && b.status !== "connected") return -1;
+                    if (a.status !== "connected" && b.status === "connected") return 1;
+                    return a.name.localeCompare(b.name);
+                });
+
                 setIntegrations(mergedIntegrations);
             } catch (error) {
                 console.error("Failed to fetch integrations:", error);
@@ -80,9 +91,7 @@ export function Integrations() {
     const handleConnect = async (toolId: string, toolName: string) => {
         setConnectingTool(toolId);
         try {
-            // Use current URL as redirect URL
             const currentUrl = window.location.href;
-
             const res = await api.connectTool(toolId, { redirect_url: currentUrl });
 
             if (res.redirect_url) {
@@ -90,14 +99,42 @@ export function Integrations() {
             } else {
                 toast({
                     title: "Configuration Required",
-                    description: "No redirect URL returned. Please check backend config.",
+                    description: "No redirect URL returned.",
                     variant: "destructive"
                 });
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             toast({
                 title: "Connection Failed",
-                description: error.message || "Could not initiate connection",
+                description: (error as Error).message || "Could not initiate connection",
+                variant: "destructive"
+            });
+        } finally {
+            setConnectingTool(null);
+        }
+    };
+
+    const handleDisconnect = async (toolId: string) => {
+        setConnectingTool(toolId); // Reuse connecting state for loading spinner
+        try {
+            await api.disconnectTool(toolId);
+
+            // Update local state to reflect disconnection
+            setIntegrations(prev => prev.map(int => {
+                if (int.id === toolId) {
+                    return { ...int, status: "connect" as const, connectedAs: undefined };
+                }
+                return int;
+            }));
+
+            toast({
+                title: "Disconnected",
+                description: "Integration disconnected successfully.",
+            });
+        } catch (error: unknown) {
+            toast({
+                title: "Disconnect Failed",
+                description: (error as Error).message || "Could not disconnect tool",
                 variant: "destructive"
             });
         } finally {
@@ -185,6 +222,7 @@ export function Integrations() {
                                 key={integration.id}
                                 integration={integration}
                                 onConnect={() => handleConnect(integration.id, integration.name)}
+                                onDisconnect={() => handleDisconnect(integration.id)}
                                 isConnecting={connectingTool === integration.id}
                             />
                         ))}
@@ -204,10 +242,12 @@ export function Integrations() {
 function IntegrationCard({
     integration,
     onConnect,
+    onDisconnect,
     isConnecting
 }: {
     integration: Integration;
     onConnect: () => void;
+    onDisconnect: () => void;
     isConnecting: boolean;
 }) {
     // Generate a fallback color based on name for the icon background
@@ -240,11 +280,20 @@ function IntegrationCard({
 
             <div className="mt-auto pt-4">
                 {integration.status === "connected" ? (
-                    <div className="flex justify-between items-center w-full">
-                        <div className="h-8 px-3 w-full bg-emerald-500/10 text-emerald-600 rounded-md flex items-center justify-center text-xs font-medium gap-1.5">
+                    <div className="flex justify-between items-center w-full gap-2">
+                        <div className="h-8 px-3 flex-1 bg-emerald-500/10 text-emerald-600 rounded-md flex items-center justify-center text-xs font-medium gap-1.5 border border-emerald-500/20">
                             <Check className="w-3 h-3" />
-                            {integration.connectedAs || "Connected"}
+                            Connected
                         </div>
+                        <Button
+                            variant="destructive"
+                            size="sm"
+                            className="h-8 px-2 text-xs"
+                            onClick={onDisconnect}
+                            disabled={isConnecting}
+                        >
+                            {isConnecting ? <Loader2 className="w-3 h-3 animate-spin" /> : "Disconnect"}
+                        </Button>
                     </div>
                 ) : integration.status === "pending" ? (
                     <div className="h-8 px-3 w-full bg-amber-500/10 text-amber-600 rounded-md flex items-center justify-center text-xs font-medium">

@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from typing import Optional, Dict
 from app.api.deps import get_current_user
-from app.models import User
+from app.models import User, PendingAction
 from app.core.config import settings
 import httpx
+import urllib.parse
 
 router = APIRouter()
 
@@ -158,7 +159,9 @@ TOOL_CONFIG_MAP = {
     "reddit": "ac_2_IjyXggGH8F",
     "perplexity": "ac_9u_yICXpCVs4",
     "google_sheets": "ac_E9vuh1t4AzEu",
-    "sheets": "ac_E9vuh1t4AzEu" # Alias
+    "sheets": "ac_E9vuh1t4AzEu", # Alias
+    "linkedin": "ac_SdzD1ondK6Zi",
+    "twitter": "ac_46x65PoeAWsM"
 }
 
 from pydantic import BaseModel
@@ -302,11 +305,15 @@ async def get_tool_status(tool: str, user: User = Depends(get_current_user)):
                 if resp.status_code == 200:
                     data = resp.json()
                     status = data.get("status", "UNKNOWN")
+                    # Only return ACTIVE if explicitly connected
                     if status in ["ACTIVE", "CONNECTED"]:
                         return {"status": "ACTIVE", "tool": tool, "connection_id": connection_id}
+                    else:
+                        return {"status": status, "tool": tool, "connection_id": connection_id}
             except Exception as e:
                 pass
-
     
-    # If we have a connection_id stored, assume it's connected
-    return {"status": "ACTIVE", "tool": tool, "connection_id": connection_id}
+    # Fallback: If we can't verify, we should probably be cautious. 
+    # But for UX, if we have an ID, typically we assume pending/inactive if check failed?
+    # Returning INACTIVE ensures we don't assume success erroneously.
+    return {"status": "INACTIVE", "tool": tool, "connection_id": connection_id}
