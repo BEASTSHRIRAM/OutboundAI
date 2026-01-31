@@ -30,7 +30,7 @@ EMAIL_SCRAPING_REPOS: List[Dict[str, str]] = [
 async def list_email_scraping_repositories(_: User = Depends(get_current_user)) -> Dict[str, List[Dict[str, str]]]:
     """
     Return a curated list of repositories that perform email scraping.
-    This helps users quickly discover open-source tooling without needing authentication.
+    This helps authenticated users discover open-source tooling.
     """
     return {"repositories": EMAIL_SCRAPING_REPOS}
 
