@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from app.api.deps import get_current_user
 from app.models import User, PendingAction
 from app.core.config import settings
@@ -7,6 +7,32 @@ import httpx
 import urllib.parse
 
 router = APIRouter()
+
+EMAIL_SCRAPING_REPOS: List[Dict[str, str]] = [
+    {
+        "name": "steveclarke/email-scraper",
+        "url": "https://github.com/steveclarke/email-scraper",
+        "description": "Python scraper that extracts emails from websites with domain filtering support."
+    },
+    {
+        "name": "mailboxvalidator/email-finder",
+        "url": "https://github.com/mailboxvalidator/email-finder",
+        "description": "Email discovery tool combining scraping and validation heuristics."
+    },
+    {
+        "name": "mario/email-extractor",
+        "url": "https://github.com/mario/email-extractor",
+        "description": "CLI utility to crawl pages and output deduplicated email addresses."
+    }
+]
+
+@router.get("/email-scraping/repositories")
+async def list_email_scraping_repositories(_: User = Depends(get_current_user)) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Return a curated list of repositories that perform email scraping.
+    This helps authenticated users discover open-source tooling.
+    """
+    return {"repositories": EMAIL_SCRAPING_REPOS}
 
 @router.post("/gmail/connect")
 async def connect_gmail(redirect_url: str = None, user: User = Depends(get_current_user)):
@@ -68,11 +94,10 @@ async def get_gmail_status(user: User = Depends(get_current_user)):
     """
     if not user.gmail_connection_id:
         return {"status": "INACTIVE"}
-        
-    # Verify with Composio
+
     url = f"https://backend.composio.dev/api/v3/connected_accounts/{user.gmail_connection_id}"
     headers = {"x-api-key": settings.COMPOSIO_API_KEY}
-    
+
     if not settings.COMPOSIO_API_KEY:
          return {"status": "INACTIVE"} # Config missing
 
@@ -81,14 +106,14 @@ async def get_gmail_status(user: User = Depends(get_current_user)):
             resp = await client.get(url, headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
-                # Check status field. might be "status": "ACTIVE" or "connected"
                 status = data.get("status")
                 if status == "ACTIVE" or status == "CONNECTED":
                     return {"status": "ACTIVE"}
         except Exception:
             pass # Fallback to inactive on error
-    
+
     return {"status": "INACTIVE"}
+
 
 @router.post("/slack/connect")
 async def connect_slack(user: User = Depends(get_current_user)):
