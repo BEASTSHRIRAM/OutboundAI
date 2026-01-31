@@ -94,6 +94,7 @@ def extract_channel_from_objective(objective: str) -> List[str]:
         "/slack": ["slack", "slack message", "dm on slack"],
         "/github": ["github", "gh issue", "pull request", "pr"],
         "/gmail": ["email", "gmail", "send email", "mail"],
+        "/phone": ["call", "phone", "voice", "mobile", "ring"],
     }
     
     obj_lower = objective.lower()
@@ -132,6 +133,11 @@ def extract_identifiers_from_objective(objective: str) -> Dict[str, str]:
     reddit_match = re.search(r"u/([a-zA-Z0-9_-]+)", objective)
     if reddit_match:
         identifiers["reddit"] = reddit_match.group(1)
+
+    # Phone number (E.164 format roughly)
+    phone_match = re.search(r"(\+\d{10,15})", objective.replace(" ", "").replace("-", ""))
+    if phone_match:
+        identifiers["phone"] = phone_match.group(1)
     
     return identifiers
 
@@ -264,9 +270,10 @@ CHANNEL MAPPING:
 - Slack messages → /slack
 - GitHub issues/PRs → /github
 - Email → /gmail
+- Phone calls → /phone
 
 CRITICAL RULES FOR draft_required:
-- draft_required = TRUE for: send, post, create, write, publish, message, email, tweet, comment
+- draft_required = TRUE for: send, post, create, write, publish, message, email, tweet, comment, call, phone
 - draft_required = FALSE for: read, get, fetch, show, list, check, query, search, find
 
 Return ONLY valid JSON:
@@ -330,7 +337,7 @@ Return ONLY valid JSON:
         person_name = extract_person_name(objective)
         
         # Simple heuristic for draft_required
-        write_keywords = ["send", "post", "create", "write", "message", "email", "tweet", "dm"]
+        write_keywords = ["send", "post", "create", "write", "message", "email", "tweet", "dm", "call", "phone"]
         draft_required = any(kw in objective.lower() for kw in write_keywords)
         
         return {
@@ -634,7 +641,8 @@ async def outreach_flow(state: AgentState) -> Dict:
             "/twitter": "Max 280 characters",
             "/slack": "Supports markdown formatting",
             "/gmail": "Professional email format with subject line",
-            "/reddit": "Follows subreddit rules and etiquette"
+            "/reddit": "Follows subreddit rules and etiquette",
+            "/phone": "System prompt for AI voice agent. Write instructions for how the AI should behave."
         }
         
         attachments = state.get("attachments", [])
@@ -843,7 +851,9 @@ async def review_queue(state: AgentState) -> Dict:
         body=draft_content.get("body", ""),
         ai_reasoning=draft_content.get("reasoning", ""),
         status=DraftStatus.PENDING,
-        attachments=draft_content.get("attachments", [])
+        attachments=draft_content.get("attachments", []),
+        # Ensure target identifier is saved in public_contact if prospect didn't have it
+        public_contact=prospect.get("public_contact") or draft_content.get("target_identifier", "")
     )
     await d_doc.insert()
     
@@ -1081,6 +1091,28 @@ async def execute_write_action(user: User, channel: str, draft_content: Dict, ch
             owner, repo = match.groups()
             return await github.create_issue(user.clerk_id, owner, repo, subject or "Issue", body)
         return {"success": False, "error": "Could not parse repository info"}
+
+    elif channel == "/phone":
+        from app.services.voice import trigger_call
+        # Body contains the system prompt (script)
+        # Target contains the phone number
+        
+        # Verify phone number format
+        if not target or not target.startswith("+"):
+             print(f"[AGENT ERROR] Invalid phone number: {target}")
+             return {"success": False, "error": f"Phone number must be in E.164 format (e.g., +91...). Got: {target}"}
+             
+        # Call the voice service
+        print(f"[AGENT] Triggering call to {target} with intent length {len(body)}")
+        
+        # Pass mission_id in metadata
+        metadata = {"mission_id": state["mission_id"]}
+        
+        return await trigger_call(
+            phone_number=target,
+            intent=body,
+            metadata=metadata
+        )
     
     return {"success": False, "error": f"Unknown channel: {channel}"}
 

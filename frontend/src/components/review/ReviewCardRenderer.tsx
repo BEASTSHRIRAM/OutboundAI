@@ -4,6 +4,7 @@ import { TwitterReviewCard } from "./cards/TwitterReviewCard";
 import { RedditReviewCard } from "./cards/RedditReviewCard";
 import { InstagramReviewCard } from "./cards/InstagramReviewCard";
 import { SlackReviewCard } from "./cards/SlackReviewCard";
+import { PhoneReviewCard } from "./cards/PhoneReviewCard";
 import { ContentEditor } from "./ContentEditor";
 
 interface Asset {
@@ -36,6 +37,8 @@ interface ReviewCardRendererProps {
     threadTs?: string;
     // Email
     attachments?: { filename: string; asset_id: string }[];
+    // Phone
+    recipientPhone?: string;
   };
   onSubjectChange?: (value: string) => void;
   onBodyChange?: (value: string) => void;
@@ -141,6 +144,18 @@ export function ReviewCardRenderer({
           body={body}
           channel={metadata.slackChannel || "general"}
           threadTs={metadata.threadTs}
+          onBodyChange={onBodyChange}
+          onRegenerate={onRegenerate}
+          isRegenerating={isRegenerating}
+        />
+      );
+
+    case "phone":
+    case "call":
+      return (
+        <PhoneReviewCard
+          body={body}
+          phoneNumber={metadata.recipientPhone}
           onBodyChange={onBodyChange}
           onRegenerate={onRegenerate}
           isRegenerating={isRegenerating}

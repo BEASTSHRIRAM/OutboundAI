@@ -37,9 +37,12 @@ class Settings(BaseSettings):
     AURA_INSTANCEID: Optional[str] = None
     AURA_INSTANCENAME: Optional[str] = None
 
-    # Unipile Settings
-    UNIPILE_DSN: Optional[str] = None
-    UNIPILE_API_KEY: Optional[str] = None
+    # Voice Agent Settings (Vapi/Bland)
+    VAPI_API_KEY: Optional[str] = None
+    VAPI_PHONE_NUMBER_ID: Optional[str] = None
+    VAPI_ASSISTANT_ID: Optional[str] = None  # Use existing assistant instead of transient
+    VAPI_PUBLIC_KEY: Optional[str] = None  # For webhook verification if needed
+    BLAND_API_KEY: Optional[str] = None
 
     model_config = {
         "env_file": ".env",

@@ -16,6 +16,7 @@ import Calendar from "./pages/Calendar";
 import ContactHistory from "./pages/ContactHistory";
 import { Integrations } from "./pages/Integrations";
 import Profile from "./pages/Profile";
+import VoiceCall from "./pages/VoiceCall";
 
 import { SignedIn, SignedOut, RedirectToSignIn } from "@clerk/clerk-react";
 import SignIn from "./pages/SignIn";
@@ -151,6 +152,18 @@ const App = () => (
                 <SignedIn>
                   <AppLayout>
                     <Profile />
+                  </AppLayout>
+                </SignedIn>
+                <SignedOut>
+                  <RedirectToSignIn />
+                </SignedOut>
+              </>
+            } />
+            <Route path="/voice" element={
+              <>
+                <SignedIn>
+                  <AppLayout>
+                    <VoiceCall />
                   </AppLayout>
                 </SignedIn>
                 <SignedOut>

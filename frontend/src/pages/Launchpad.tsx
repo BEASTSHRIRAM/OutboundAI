@@ -188,7 +188,10 @@ const Launchpad = () => {
                 id={mission._id || mission.id}
                 name={mission.objective || "Untitled Mission"}
                 status={
-                  mission.status === "waiting_approval" ? "paused" : mission.status || "running"
+                  (mission.status === "waiting_approval" ? "paused" :
+                    ["running", "stopped", "completed", "paused", "error"].includes(mission.status || "")
+                      ? mission.status
+                      : "running") as "error" | "running" | "stopped" | "completed" | "paused"
                 }
                 stage={mission.status === "waiting_approval" ? 2 : 1}
                 totalStages={3}

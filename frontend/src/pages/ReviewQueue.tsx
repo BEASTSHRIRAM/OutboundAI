@@ -609,6 +609,8 @@ export default function ReviewQueue() {
                 threadTs: currentDraft.metadata?.threadTs,
                 // Email attachments
                 attachments: currentDraft.attachments,
+                // Phone
+                recipientPhone: currentDraft.public_contact,
               }}
               onSubjectChange={handleSubjectChange}
               onBodyChange={handleBodyChange}
@@ -668,7 +670,8 @@ export default function ReviewQueue() {
                     currentDraft?.channel === "reddit" ? "Approve & Post" :
                       currentDraft?.channel === "linkedin" ? "Approve & Send" :
                         currentDraft?.channel === "slack" ? "Approve & Send" :
-                          "Approve & Send"}
+                          currentDraft?.channel === "phone" || currentDraft?.channel === "call" ? "Approve & Call" :
+                            "Approve & Send"}
                 </>
               )}
             </Button>

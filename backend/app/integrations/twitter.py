@@ -4,7 +4,7 @@ Uses Composio SDK
 https://docs.composio.dev/reference/sdk-reference/python
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from app.core.config import settings
 from composio import Composio
 
@@ -20,6 +20,55 @@ def get_composio_client():
             raise ValueError("COMPOSIO_API_KEY is not set")
         _composio_client = Composio(api_key=settings.COMPOSIO_API_KEY)
     return _composio_client
+
+
+def parse_composio_response(result: Any) -> Dict:
+    """
+    Parse Composio execute response and handle pending actions.
+    
+    Args:
+        result: Raw response from Composio tools.execute()
+        
+    Returns:
+        Dict with parsed data or error information
+    """
+    # Handle dict response
+    if isinstance(result, dict):
+        # Check for error in response
+        if result.get("error"):
+            return {"success": False, "error": result.get("error")}
+        # Check for successful data
+        if result.get("data"):
+            return {"success": True, "data": result.get("data")}
+        return {"success": True, "data": result}
+    
+    # Handle object response (ExecuteActionResponse)
+    if hasattr(result, 'data'):
+        response_data = result.data
+        
+        # Check if response_data is a dict with nested structure
+        if isinstance(response_data, dict):
+            # Handle successful response
+            if response_data.get("data"):
+                return {"success": True, "data": response_data.get("data")}
+            # Handle error in response
+            if response_data.get("error"):
+                return {"success": False, "error": response_data.get("error")}
+            return {"success": True, "data": response_data}
+        
+        return {"success": True, "data": response_data}
+    
+    # Handle response with successfull attribute (note: Composio uses 'successfull')
+    if hasattr(result, 'successfull'):
+        if result.successfull:
+            data = getattr(result, 'data', None) or getattr(result, 'response_data', None)
+            return {"success": True, "data": data}
+        else:
+            error = getattr(result, 'error', None) or "Action failed"
+            return {"success": False, "error": str(error)}
+    
+    # Fallback: return raw result
+    return {"success": True, "data": result}
 
 
 async def post_tweet(user_id: str, text: str, reply_to_id: Optional[str] = None) -> Dict:
@@ -52,7 +101,8 @@ async def post_tweet(user_id: str, text: str, reply_to_id: Optional[str] = None)
             user_id=user_id,
             dangerously_skip_version_check=True,
         )
-        return {"success": True, "data": result}
+        
+        return parse_composio_response(result)
     except Exception as e:
         print(f"ERROR: Twitter post_tweet failed: {e}")
         return {"success": False, "error": str(e)}
@@ -93,7 +143,7 @@ async def like_tweet(user_id: str, tweet_id: str) -> Dict:
             user_id=user_id,
             dangerously_skip_version_check=True,
         )
-        return {"success": True, "data": result}
+        return parse_composio_response(result)
     except Exception as e:
         print(f"ERROR: Twitter like_tweet failed: {e}")
         return {"success": False, "error": str(e)}
@@ -119,7 +169,7 @@ async def retweet(user_id: str, tweet_id: str) -> Dict:
             user_id=user_id,
             dangerously_skip_version_check=True,
         )
-        return {"success": True, "data": result}
+        return parse_composio_response(result)
     except Exception as e:
         print(f"ERROR: Twitter retweet failed: {e}")
         return {"success": False, "error": str(e)}
@@ -145,7 +195,7 @@ async def get_timeline(user_id: str, count: int = 20) -> Dict:
             user_id=user_id,
             dangerously_skip_version_check=True,
         )
-        return {"success": True, "data": result}
+        return parse_composio_response(result)
     except Exception as e:
         print(f"ERROR: Twitter get_timeline failed: {e}")
         return {"success": False, "error": str(e)}
@@ -170,7 +220,7 @@ async def get_mentions(user_id: str) -> Dict:
             user_id=user_id,
             dangerously_skip_version_check=True,
         )
-        return {"success": True, "data": result}
+        return parse_composio_response(result)
     except Exception as e:
         print(f"ERROR: Twitter get_mentions failed: {e}")
         return {"success": False, "error": str(e)}

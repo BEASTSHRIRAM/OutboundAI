@@ -48,6 +48,10 @@ from app.routers import timeline
 app.include_router(timeline.router, prefix="/api/v1", tags=["timeline"])
 from app.routers import settings as settings_router
 app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["settings"])
+from app.routers import voice
+app.include_router(voice.router, prefix="/api/v1/voice", tags=["voice"])
+from app.routers import webhooks
+app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 
 from app.core.socket import manager
