@@ -26,6 +26,14 @@ EMAIL_SCRAPING_REPOS: List[Dict[str, str]] = [
     }
 ]
 
+@router.get("/email-scraping/repositories")
+async def list_email_scraping_repositories() -> Dict[str, List[Dict[str, str]]]:
+    """
+    Return a curated list of repositories that perform email scraping.
+    This helps users quickly discover open-source tooling without needing authentication.
+    """
+    return {"repositories": EMAIL_SCRAPING_REPOS}
+
 @router.post("/gmail/connect")
 async def connect_gmail(redirect_url: str = None, user: User = Depends(get_current_user)):
     """
