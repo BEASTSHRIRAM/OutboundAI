@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from app.api.deps import get_current_user
 from app.models import User, PendingAction
 from app.core.config import settings
@@ -7,6 +7,24 @@ import httpx
 import urllib.parse
 
 router = APIRouter()
+
+EMAIL_SCRAPING_REPOS: List[Dict[str, str]] = [
+    {
+        "name": "steveclarke/email-scraper",
+        "url": "https://github.com/steveclarke/email-scraper",
+        "description": "Python scraper that extracts emails from websites with domain filtering support."
+    },
+    {
+        "name": "mailboxvalidator/email-finder",
+        "url": "https://github.com/mailboxvalidator/email-finder",
+        "description": "Email discovery tool combining scraping and validation heuristics."
+    },
+    {
+        "name": "mario/email-extractor",
+        "url": "https://github.com/mario/email-extractor",
+        "description": "CLI utility to crawl pages and output deduplicated email addresses."
+    }
+]
 
 @router.post("/gmail/connect")
 async def connect_gmail(redirect_url: str = None, user: User = Depends(get_current_user)):
@@ -68,7 +86,16 @@ async def get_gmail_status(user: User = Depends(get_current_user)):
     """
     if not user.gmail_connection_id:
         return {"status": "INACTIVE"}
-        
+
+
+@router.get("/email-scraping-repos")
+async def list_email_scraping_repositories() -> Dict[str, List[Dict[str, str]]]:
+    """
+    Return a curated list of repositories that perform email scraping.
+    This helps users quickly discover open-source tooling without needing authentication.
+    """
+    return {"repositories": EMAIL_SCRAPING_REPOS}
+
     # Verify with Composio
     url = f"https://backend.composio.dev/api/v3/connected_accounts/{user.gmail_connection_id}"
     headers = {"x-api-key": settings.COMPOSIO_API_KEY}
