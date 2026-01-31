@@ -96,27 +96,6 @@ async def list_email_scraping_repositories() -> Dict[str, List[Dict[str, str]]]:
     """
     return {"repositories": EMAIL_SCRAPING_REPOS}
 
-    # Verify with Composio
-    url = f"https://backend.composio.dev/api/v3/connected_accounts/{user.gmail_connection_id}"
-    headers = {"x-api-key": settings.COMPOSIO_API_KEY}
-    
-    if not settings.COMPOSIO_API_KEY:
-         return {"status": "INACTIVE"} # Config missing
-
-    async with httpx.AsyncClient() as client:
-        try:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                data = resp.json()
-                # Check status field. might be "status": "ACTIVE" or "connected"
-                status = data.get("status")
-                if status == "ACTIVE" or status == "CONNECTED":
-                    return {"status": "ACTIVE"}
-        except Exception:
-            pass # Fallback to inactive on error
-    
-    return {"status": "INACTIVE"}
-
 @router.post("/slack/connect")
 async def connect_slack(user: User = Depends(get_current_user)):
     """
