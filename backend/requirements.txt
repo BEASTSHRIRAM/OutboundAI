@@ -18,3 +18,12 @@ neo4j~=5.28
 # RAG document parsing
 PyPDF2
 python-docx
+# Email verification
+dnspython
+# Retry logic
+tenacity==8.2.3
+# Input validation
+email-validator==2.1.0
+# Caching
+aiocache==0.12.2
+redis==5.0.1

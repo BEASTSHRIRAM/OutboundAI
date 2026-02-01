@@ -1,5 +1,6 @@
 
-from pydantic_settings import BaseSettings
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 class Settings(BaseSettings):
@@ -16,6 +17,9 @@ class Settings(BaseSettings):
     FIRECRAWL_API_KEY: Optional[str] = None
     COMPOSIO_API_KEY: Optional[str] = None
     COMPOSIO_AUTH_CONFIG_ID: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = None
+    APOLLO_API_KEY: Optional[str] = None
+    HUNTER_API_KEY: Optional[str] = None  # Email verification
 
     # Neo4j Settings
     NEO4J_URI: Optional[str] = None
@@ -25,25 +29,6 @@ class Settings(BaseSettings):
     AURA_INSTANCEID: Optional[str] = None
     AURA_INSTANCENAME: Optional[str] = None
 
-    # Unipile Settings
-    UNIPILE_DSN: Optional[str] = None
-    UNIPILE_API_KEY: Optional[str] = None
-
-    # Neo4j Settings
-    NEO4J_URI: Optional[str] = None
-    NEO4J_USERNAME: Optional[str] = None
-    NEO4J_PASSWORD: Optional[str] = None
-    NEO4J_DATABASE: str = "neo4j"
-    AURA_INSTANCEID: Optional[str] = None
-    AURA_INSTANCENAME: Optional[str] = None
-
-    # Unipile Settings
-    UNIPILE_DSN: Optional[str] = None
-    UNIPILE_API_KEY: Optional[str] = None
-
-    model_config = {
-        "env_file": ".env",
-        "extra": "ignore"
-    }
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

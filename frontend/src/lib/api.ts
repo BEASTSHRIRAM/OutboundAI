@@ -11,11 +11,31 @@ interface Attachment {
 
 interface Agent {
   id?: string;
+  _id?: string;
   name: string;
   role: string;
   capabilities: string[];
   system_prompt?: string;
   status: "active" | "inactive" | "training";
+}
+
+export interface Mission {
+    id?: string;
+    _id?: string;
+    objective: string;
+    status: string;
+    created_at: string;
+    prospects_count?: number;
+    drafts_count?: number;
+}
+
+interface MissionLog {
+  id: string;
+  role: string;
+  content: string;
+  timestamp: string;
+  type: "success" | "error" | "thinking" | "info";
+  metadata?: Record<string, unknown>;
 }
 
 export function useApi() {
@@ -34,6 +54,14 @@ export function useApi() {
     }, [getToken]);
 
     return useMemo(() => ({
+        // Generic GET method
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        get: async <T = any>(url: string): Promise<T> => {
+            const res = await fetchWithAuth(url);
+            if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+            return res.json();
+        },
+
         // User
         getUser: async () => {
             const res = await fetchWithAuth("/users/me");
@@ -41,10 +69,10 @@ export function useApi() {
         },
 
         // Missions
-        createMission: async (objective: string, attachments: Attachment[] = []) => {
+        createMission: async (objective: string, attachments: Attachment[] = [], autonomous: boolean = false) => {
             const res = await fetchWithAuth("/missions/", {
                 method: "POST",
-                body: JSON.stringify({ objective, attachments }),
+                body: JSON.stringify({ objective, attachments, autonomous }),
             });
             if (!res.ok) {
                 const error = await res.json();
@@ -53,13 +81,13 @@ export function useApi() {
             return res.json();
         },
 
-        listMissions: async () => {
+        listMissions: async (): Promise<Mission[]> => {
             const res = await fetchWithAuth("/missions/");
             if (!res.ok) throw new Error('Failed to fetch missions');
             return res.json();
         },
 
-        getMissionLogs: async (missionId: string) => {
+        getMissionLogs: async (missionId: string): Promise<MissionLog[]> => {
             const res = await fetchWithAuth(`/missions/${missionId}/logs`);
             if (!res.ok) throw new Error('Failed to fetch mission logs');
             return res.json();
@@ -196,7 +224,7 @@ export function useApi() {
         },
 
         // Agents
-        getAgents: async () => {
+        getAgents: async (): Promise<Agent[]> => {
             const res = await fetchWithAuth("/agents/");
             if (!res.ok) throw new Error('Failed to fetch agents');
             return res.json();
@@ -364,6 +392,167 @@ export function useApi() {
                 body: JSON.stringify(settings),
             });
             if (!res.ok) throw new Error('Failed to update settings');
+            return res.json();
+        },
+
+        // Scraper methods
+        scrapeEmails: async (url: string, maxDepth = 2, maxPages = 30) => {
+            const res = await fetchWithAuth('/scraper/scrape-emails', {
+                method: 'POST',
+                body: JSON.stringify({ url, max_depth: maxDepth, max_pages: maxPages }),
+            });
+            if (!res.ok) throw new Error('Failed to scrape emails');
+            return res.json();
+        },
+
+        scrapeJobs: async (jobTitle: string, location = 'United States', maxResults = 50, sources?: string[]) => {
+            const res = await fetchWithAuth('/scraper/scrape-jobs', {
+                method: 'POST',
+                body: JSON.stringify({ 
+                    job_title: jobTitle, 
+                    location, 
+                    max_results: maxResults,
+                    sources 
+                }),
+            });
+            if (!res.ok) throw new Error('Failed to scrape jobs');
+            return res.json();
+        },
+
+        researchCompany: async (companyName: string, companyWebsite?: string) => {
+            const res = await fetchWithAuth('/scraper/research-company', {
+                method: 'POST',
+                body: JSON.stringify({ 
+                    company_name: companyName, 
+                    company_website: companyWebsite 
+                }),
+            });
+            if (!res.ok) throw new Error('Failed to research company');
+            return res.json();
+        },
+
+        getScraperStatus: async () => {
+            const res = await fetchWithAuth('/scraper/scraper/status');
+            if (!res.ok) throw new Error('Failed to get scraper status');
+            return res.json();
+        },
+
+        // Sales Agent methods
+        startSalesConversation: async (missionId: string, prospectInfo: {
+            name?: string;
+            company?: string;
+            title?: string;
+            context?: string;
+        }) => {
+            const res = await fetchWithAuth('/sales-agent/conversations/start', {
+                method: 'POST',
+                body: JSON.stringify({
+                    mission_id: missionId,
+                    prospect_name: prospectInfo.name,
+                    prospect_company: prospectInfo.company,
+                    prospect_title: prospectInfo.title,
+                    prospect_context: prospectInfo.context,
+                    salesperson_name: 'Alex',
+                    conversation_purpose: 'Qualify prospect and schedule demo',
+                }),
+            });
+            if (!res.ok) throw new Error('Failed to start conversation');
+            return res.json();
+        },
+
+        sendSalesMessage: async (conversationId: string, message: string) => {
+            const res = await fetchWithAuth('/sales-agent/conversations/message', {
+                method: 'POST',
+                body: JSON.stringify({ conversation_id: conversationId, message }),
+            });
+            if (!res.ok) throw new Error('Failed to send message');
+            return res.json();
+        },
+
+        getSalesConversationStage: async (conversationId: string) => {
+            const res = await fetchWithAuth(`/sales-agent/conversations/${conversationId}/stage`);
+            if (!res.ok) throw new Error('Failed to get conversation stage');
+            return res.json();
+        },
+
+        getSalesConversationSummary: async (conversationId: string) => {
+            const res = await fetchWithAuth(`/sales-agent/conversations/${conversationId}/summary`);
+            if (!res.ok) throw new Error('Failed to get conversation summary');
+            return res.json();
+        },
+
+        handleSalesObjection: async (conversationId: string, objection: string) => {
+            const res = await fetchWithAuth(`/sales-agent/conversations/${conversationId}/handle-objection?objection=${encodeURIComponent(objection)}`, {
+                method: 'POST',
+            });
+            if (!res.ok) throw new Error('Failed to handle objection');
+            return res.json();
+        },
+
+        endSalesConversation: async (conversationId: string) => {
+            const res = await fetchWithAuth(`/sales-agent/conversations/${conversationId}`, {
+                method: 'DELETE',
+            });
+            if (!res.ok) throw new Error('Failed to end conversation');
+            return res.json();
+        },
+
+        getSalesAgentCapabilities: async () => {
+            const res = await fetchWithAuth('/sales-agent/agent/capabilities');
+            if (!res.ok) throw new Error('Failed to get agent capabilities');
+            return res.json();
+        },
+
+        configureSalesAgent: async (config: {
+            salesperson_name?: string;
+            salesperson_role?: string;
+            company_name?: string;
+            conversation_purpose?: string;
+            temperature?: number;
+        }) => {
+            const res = await fetchWithAuth('/sales-agent/agent/configure', {
+                method: 'POST',
+                body: JSON.stringify(config),
+            });
+            if (!res.ok) throw new Error('Failed to configure agent');
+            return res.json();
+        },
+
+        // Email Verification methods
+        verifyEmail: async (email: string, validationLevel: 'regex' | 'mx' | 'mx_blacklist' | 'smtp' = 'mx') => {
+            const res = await fetchWithAuth('/scraper/verify-email', {
+                method: 'POST',
+                body: JSON.stringify({ email, validation_level: validationLevel }),
+            });
+            if (!res.ok) throw new Error('Failed to verify email');
+            return res.json();
+        },
+
+        verifyEmailsBatch: async (emails: string[], validationLevel: 'regex' | 'mx' | 'mx_blacklist' | 'smtp' = 'mx') => {
+            const res = await fetchWithAuth('/scraper/verify-emails-batch', {
+                method: 'POST',
+                body: JSON.stringify({ emails, validation_level: validationLevel }),
+            });
+            if (!res.ok) throw new Error('Failed to verify emails');
+            return res.json();
+        },
+
+        // Bulk draft operations for job seeker workflow
+        createBulkDrafts: async (missionId: string, prospectIds: string[]) => {
+            const res = await fetchWithAuth(`/missions/${missionId}/create-bulk-drafts`, {
+                method: 'POST',
+                body: JSON.stringify({ prospect_ids: prospectIds }),
+            });
+            if (!res.ok) throw new Error('Failed to create bulk drafts');
+            return res.json();
+        },
+
+        approveAllDrafts: async (missionId?: string) => {
+            const params = missionId ? `?mission_id=${missionId}` : '';
+            const res = await fetchWithAuth(`/reviews/approve-all${params}`, {
+                method: 'POST',
+            });
+            if (!res.ok) throw new Error('Failed to approve all drafts');
             return res.json();
         },
     }), [fetchWithAuth, getToken]);

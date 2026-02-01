@@ -71,6 +71,7 @@ def sanitize_json_string(content: str) -> str:
 
 class MissionCreate(BaseModel):
     objective: str
+    mode: Optional[str] = "task" # "task" or "auto"
     attachments: Optional[List[Dict]] = []  # List of {asset_id, filename, content_type}
 
 # Direct action patterns - bypass agent workflow for these
@@ -220,7 +221,7 @@ Set ready=false if recipient email is unclear.{rag_injection}"""),
         }
         tool = tool_map.get(detected_action)
         
-        # Check connection
+        # Check connection and verify it's active
         conn_id = None
         if tool == "slack":
             conn_id = user.slack_connection_id
@@ -229,7 +230,37 @@ Set ready=false if recipient email is unclear.{rag_injection}"""),
         else:
             conn_id = user.other_connections.get(tool) if user.other_connections else None
         
-        if not conn_id:
+        # Verify connection is active (not just that it exists)
+        connection_active = False
+        if conn_id:
+            try:
+                import httpx
+                url = f"https://backend.composio.dev/api/v3/connected_accounts/{conn_id}"
+                headers = {"x-api-key": settings.COMPOSIO_API_KEY}
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        status = data.get("status", "")
+                        connection_active = status in ["ACTIVE", "CONNECTED"]
+                        if not connection_active:
+                            print(f"{tool} connection exists but status is: {status}")
+            except Exception as e:
+                print(f"Failed to verify {tool} connection status: {e}")
+        
+        if not conn_id or not connection_active:
+            # Clear expired connection if it exists
+            if conn_id and not connection_active:
+                if tool == "slack":
+                    user.slack_connection_id = None
+                elif tool == "gmail":
+                    user.gmail_connection_id = None
+                else:
+                    if user.other_connections and tool in user.other_connections:
+                        del user.other_connections[tool]
+                await user.save()
+                print(f"Cleared expired {tool} connection")
+            
             # Create pending action and return connect prompt
             pending = PendingAction(
                 user_id=user.clerk_id,
@@ -264,38 +295,48 @@ Set ready=false if recipient email is unclear.{rag_injection}"""),
                 "redirect_uri": redirect_url
             }
             
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(url, json=payload, headers=headers, timeout=30.0)
-                if resp.status_code in [200, 201, 202]:
-                    data = resp.json()
-                    composio_redirect = data.get("redirectUrl") or data.get("redirect_url")
-                    connection_id = data.get("id") or data.get("connection_id")
-                    
-                    # Pre-save connection ID
-                    if connection_id:
-                        if tool == "slack":
-                            user.slack_connection_id = connection_id
-                        elif tool == "gmail":
-                            user.gmail_connection_id = connection_id
-                        else:
-                            if not user.other_connections:
-                                user.other_connections = {}
-                            user.other_connections[tool] = connection_id
-                        await user.save()
-                    
-                    msg = f"To post on {tool.title()}, please connect your account first. Click the button below to connect, and I'll publish automatically!"
-                    await MissionLog(
-                        mission_id=mission_id, 
-                        role="agent", 
-                        content=msg, 
-                        log_type="action",
-                        metadata={"action": "connect_tool", "tool": tool, "connect_url": composio_redirect, "pending_action_id": str(pending.id)}
-                    ).insert()
-                    return {"handled": True, "needs_connection": True}
+            try:
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(url, json=payload, headers=headers, timeout=30.0)
+                    if resp.status_code in [200, 201, 202]:
+                        data = resp.json()
+                        composio_redirect = data.get("redirectUrl") or data.get("redirect_url")
+                        connection_id = data.get("id") or data.get("connection_id")
+                        
+                        # Pre-save connection ID
+                        if connection_id:
+                            if tool == "slack":
+                                user.slack_connection_id = connection_id
+                            elif tool == "gmail":
+                                user.gmail_connection_id = connection_id
+                            else:
+                                if not user.other_connections:
+                                    user.other_connections = {}
+                                user.other_connections[tool] = connection_id
+                            await user.save()
+                        
+                        msg = f"To post on {tool.title()}, please connect your account first. Click the button below to connect, and I'll publish automatically!"
+                        await MissionLog(
+                            mission_id=mission_id, 
+                            role="agent", 
+                            content=msg, 
+                            log_type="action",
+                            metadata={"action": "connect_tool", "tool": tool, "connect_url": composio_redirect, "pending_action_id": str(pending.id)}
+                        ).insert()
+                        return {"handled": True, "needs_connection": True}
+            except Exception as e:
+                print(f"OAuth URL generation failed: {e}")
+                msg = f"To post on {tool.title()}, please connect your account first in Settings → Integrations."
+                await MissionLog(
+                    mission_id=mission_id, 
+                    role="agent", 
+                    content=msg, 
+                    log_type="action",
+                    metadata={"action": "connect_tool", "tool": tool}
+                ).insert()
+                return {"handled": True, "needs_connection": True}
         
-        # Execute the action!
-        result = {"success": False, "error": "Unknown action"}
-        
+        # Connection exists - create draft preview for user confirmation
         # Instead of auto-posting, create a draft preview and let user confirm
         # Save the action data in PendingAction for later execution
         pending = PendingAction(
@@ -448,6 +489,45 @@ async def create_mission(mission_in: MissionCreate, user: User = Depends(get_cur
     )
     await initial_log.insert()
     
+    Mission(user_id=user.clerk_id, objective=mission_in.objective)
+    # If mode is explicitly "auto", skip direct action detection and go straight to Scout
+    if mission_in.mode == "auto":
+        await MissionLog(
+          mission_id=mission_id, 
+          role="system", 
+          content="🚀 Starting Auto-Pilot Mode (Deep Research)...", 
+          log_type="thinking"
+        ).insert()
+        
+        # Trigger Scout Agent (Auto-Pilot)
+        from app.agents.scout_agent import scout_app
+        # We need to run this like the Scout endpoint logic
+        from app.routers.agents import start_scout, ScoutRequest
+        # Re-using the logic via internal call or duplicating slightly for now to be safe
+        # Ideally we refactor 'start_scout' logic to be a shared service function
+        # For now, let's call the background task directly
+        
+        async def run_scout_wrapper(mid, obj, uid):
+             # This duplicates logic from routers/agents.py start_scout
+             # In a real app we'd move this to services/scout_service.py
+             try:
+                inputs = {
+                    "mission_id": mid, 
+                    "objective": obj,
+                    "status": "planning",
+                    "search_queries": [],
+                    "visited_urls": [],
+                    "prospect_candidates": [],
+                    "iteration": 0,
+                    "errors": []
+                }
+                await scout_app.ainvoke(inputs)
+             except Exception as e:
+                print(f"Auto-pilot error: {e}")
+
+        asyncio.create_task(run_scout_wrapper(mission_id, mission_in.objective, user.clerk_id))
+        return mission
+
     # Check if this is a direct action (post, tweet, etc.) - execute immediately
     action_result = await detect_and_execute_direct_action(
         mission_in.objective, 
@@ -460,7 +540,194 @@ async def create_mission(mission_in: MissionCreate, user: User = Depends(get_cur
         # Direct action was handled, don't start agent workflow
         return mission
     
-    # Not a direct action - trigger background agent for outreach workflow
+    # Classify intent: Information Request vs Action Request
+    from langchain_groq import ChatGroq
+    from langchain_core.messages import SystemMessage, HumanMessage
+    
+    intent_classifier = ChatGroq(
+        temperature=0.0,
+        groq_api_key=settings.GROQ_API_KEY,
+        model_name="llama-3.3-70b-versatile"
+    )
+    
+    intent_prompt = f"""You are analyzing a user's request to determine their TRUE INTENT, not just keywords.
+
+User Request: "{mission_in.objective}"
+
+Classify into ONE category:
+
+**INFORMATION_REQUEST**: The user's PRIMARY goal is to GET DATA or LEARN INFORMATION. They want to:
+- See a list of people/companies
+- Research or discover prospects
+- Get contact information
+- Understand who fits their criteria
+- Browse or explore options
+Examples: "Find CTOs in AI", "Show me recruiters at Google", "Who are the VPs at Series A startups?"
+
+**ACTION_REQUEST**: The user's PRIMARY goal is to TAKE ACTION or EXECUTE A WORKFLOW. They want to:
+- Send messages or emails
+- Draft outreach content
+- Run a campaign
+- Engage or contact people
+- Execute an automated workflow
+Examples: "Draft emails to CTOs", "Send LinkedIn messages to recruiters", "Run outreach to VPs", "Contact hiring managers"
+
+CRITICAL RULES:
+1. Focus on the PRIMARY INTENT, not just the presence of action words
+2. "Find X and draft emails" = ACTION_REQUEST (drafting is the goal)
+3. "Find X" alone = INFORMATION_REQUEST (just wants the data)
+4. "Show me X to contact" = INFORMATION_REQUEST (wants to see first, then decide)
+5. "Reach out to X" = ACTION_REQUEST (wants automated outreach)
+
+Return ONLY: INFORMATION_REQUEST or ACTION_REQUEST"""
+    
+    try:
+        intent_response = await intent_classifier.ainvoke([
+            SystemMessage(content="You are an intent classifier. Return only INFORMATION_REQUEST or ACTION_REQUEST."),
+            HumanMessage(content=intent_prompt)
+        ])
+        intent = intent_response.content.strip().upper()
+        
+        # Validate response
+        if "INFORMATION_REQUEST" in intent:
+            intent = "INFORMATION_REQUEST"
+        elif "ACTION_REQUEST" in intent:
+            intent = "ACTION_REQUEST"
+        else:
+            print(f"Invalid intent response: {intent}, defaulting to ACTION_REQUEST")
+            intent = "ACTION_REQUEST"
+            
+    except Exception as e:
+        print(f"Intent classification error: {e}")
+        intent = "ACTION_REQUEST"  # Default to action if classification fails
+    
+    if intent == "INFORMATION_REQUEST":
+        # Handle as data retrieval - use Apollo/Firecrawl to fetch and display
+        await MissionLog(
+            mission_id=mission_id,
+            role="system",
+            content="🔍 Processing information request...",
+            log_type="thinking"
+        ).insert()
+        
+        # Run Scout in "research-only" mode (no drafting)
+        from app.agents.scout_agent import scout_app
+        
+        async def run_research_only(mid, obj, uid):
+            try:
+                inputs = {
+                    "mission_id": mid,
+                    "objective": obj,
+                    "status": "planning",
+                    "search_queries": [],
+                    "visited_urls": [],
+                    "prospect_candidates": [],
+                    "iteration": 0,
+                    "errors": []
+                }
+                result = await scout_app.ainvoke(inputs)
+                
+                # Format and send results to chat
+                from app.core.socket import manager
+                candidates = result.get("prospect_candidates", [])
+                
+                if candidates:
+                    # Sort by score descending
+                    sorted_cands = sorted([c for c in candidates if c], key=lambda x: x.get("analysis", {}).get("score", 0), reverse=True)
+                    results_message = f"### 🎯 Found {len(sorted_cands)} Prospects\n\n"
+                    
+                    for i, cand in enumerate(sorted_cands[:10], 1):
+                        analysis = cand.get("analysis", {}) or {}
+                        name = analysis.get('person_name') or cand.get('name') or 'Unknown'
+                        title = cand.get('title') or 'N/A'
+                        company = analysis.get('company_name') or cand.get('company') or 'N/A'
+                        email = cand.get('email') or ''
+                        linkedin = cand.get('linkedin_url') or ''
+                        score = analysis.get('score', 0)
+                        reason = analysis.get('reason') or 'N/A'
+                        verified = cand.get('email_verified', False)
+                        
+                        # Badges
+                        score_badge = f"**{score}/10**"
+                        email_display = f"`{email}` {'(Verified)' if verified else ''}" if email else "Not Available"
+                        linkedin_link = f"[View Profile]({linkedin})" if linkedin else "Not available"
+                        
+                        results_message += f"""---
+
+#### {i}. {name}
+
+**{title}** at **{company}**
+
+- **Match Score:** {score_badge}
+- **Email:** {email_display}
+- **LinkedIn:** {linkedin_link}
+- **Why Relevant:** {reason}
+
+"""
+                        # Save to Database
+                        try:
+                            from app.models import Prospect
+                            # Always save result
+                            p_doc = Prospect(
+                                mission_id=mid,
+                                name=name,
+                                company=company,
+                                context_source="Deep Research",
+                                public_contact=email,
+                                linkedin_url=linkedin,
+                                relevance_score=score/10.0,
+                                relevance_reason=reason,
+                                scraped_data=cand
+                            )
+                            await p_doc.insert()
+                            
+                            # Also add to Neo4j if possible
+                            try:
+                                from app.services.neo4j import neo4j_service
+                                if name and name != 'Unknown':
+                                    neo4j_service.resolve_person(name)
+                                    if email:
+                                        neo4j_service.add_contact_method(name, 'email', email)
+                                    if linkedin:
+                                        neo4j_service.add_contact_method(name, 'linkedin_profile', linkedin)
+                            except Exception as neo_err:
+                                print(f"Neo4j sync error: {neo_err}")
+                                
+                        except Exception as db_err:
+                            print(f"Failed to save prospect {name}: {db_err}")
+                    
+                    await manager.send_to_user(uid, {
+                        "message": results_message,
+                        "type": "success"
+                    })
+                else:
+                    try:
+                        await manager.send_to_user(uid, {
+                            "message": "No results found matching your criteria.",
+                            "type": "info"
+                        })
+                    except Exception as ws_error:
+                        print(f"WebSocket send error (no results): {ws_error}")
+                    
+                await MissionLog(
+                    mission_id=mid,
+                    role="system",
+                    content=f"Research complete. Found {len(candidates)} prospects.",
+                    log_type="success"
+                ).insert()
+            except Exception as e:
+                print(f"Research error: {e}")
+                await MissionLog(
+                    mission_id=mid,
+                    role="system",
+                    content=f"❌ Research failed: {str(e)}",
+                    log_type="error"
+                ).insert()
+        
+        asyncio.create_task(run_research_only(mission_id, mission_in.objective, user.clerk_id))
+        return mission
+    
+    # ACTION_REQUEST: Run full workflow (existing logic)
     asyncio.create_task(run_mission_agent(mission_id, mission_in.objective, user.clerk_id, mission_in.attachments or []))
     
     return mission
@@ -469,24 +736,53 @@ async def create_mission(mission_in: MissionCreate, user: User = Depends(get_cur
 async def list_missions(user: User = Depends(get_current_user)):
     from app.models import Prospect, Draft, DraftStatus
     
-    missions = await Mission.find(Mission.user_id == user.clerk_id).to_list()
+    # 1. Fetch all user missions
+    missions = await Mission.find(Mission.user_id == user.clerk_id).sort("-created_at").to_list()
     
-    # Enrich with counts
+    if not missions:
+        return []
+        
+    mission_ids = [str(m.id) for m in missions]
+    
+    # 2. Fetch all prospects for these missions in one go
+    # We only need mission_id to group them
+    prospects = await Prospect.find({"mission_id": {"$in": mission_ids}}).to_list()
+    
+    # Group prospect IDs by mission
+    mission_prospect_map = {}
+    all_prospect_ids = []
+    
+    for p in prospects:
+        mid = p.mission_id
+        if mid not in mission_prospect_map:
+            mission_prospect_map[mid] = []
+        mission_prospect_map[mid].append(str(p.id))
+        all_prospect_ids.append(str(p.id))
+        
+    # 3. Fetch all pending drafts for these prospects in one go
+    # Only check drafts if we have prospects
+    prospect_draft_count = {}
+    if all_prospect_ids:
+        pending_drafts = await Draft.find(
+            {"prospect_id": {"$in": all_prospect_ids}, "status": DraftStatus.PENDING}
+        ).to_list()
+        
+        # Group drafts by prospect_id for easy counting
+        for d in pending_drafts:
+            pid = d.prospect_id
+            prospect_draft_count[pid] = prospect_draft_count.get(pid, 0) + 1
+        
+    # 4. Assembly
     result = []
     for mission in missions:
-        mission_id = str(mission.id)
+        mid = str(mission.id)
+        mission_prospect_ids = mission_prospect_map.get(mid, [])
         
-        # Count prospects for this mission
-        prospects_count = await Prospect.find(Prospect.mission_id == mission_id).count()
+        # Count prospects
+        prospects_count = len(mission_prospect_ids)
         
-        # Count pending drafts for this mission (via prospect_id lookup)
-        prospects = await Prospect.find(Prospect.mission_id == mission_id).to_list()
-        prospect_ids = [str(p.id) for p in prospects]
-        drafts_count = 0
-        if prospect_ids:
-            drafts_count = await Draft.find(
-                {"prospect_id": {"$in": prospect_ids}, "status": DraftStatus.PENDING}
-            ).count()
+        # Count drafts (sum of drafts for each prospect in this mission)
+        drafts_count = sum(prospect_draft_count.get(pid, 0) for pid in mission_prospect_ids)
         
         result.append({
             "_id": str(mission.id),
@@ -1103,7 +1399,8 @@ Make the content informative and valuable to the community."""),
                 return {"message": success_msg, "role": "agent", "type": "success"}
     
     # CHECK FOR CREATE DRAFT COMMAND
-    create_draft_keywords = ["create draft", "regenerate draft", "generate draft", "new draft", "draft again", "make another draft", "proceed", "proceed and create", "yes create", "go ahead", "make draft", "write draft"]
+    # CHECK FOR CREATE DRAFT COMMAND
+    create_draft_keywords = ["create draft", "regenerate draft", "generate draft", "new draft", "draft again", "make another draft", "proceed", "proceed and create", "yes create", "go ahead", "make draft", "write draft", "draft mail", "draft email", "draft message", "prepare draft"]
     if force_draft or any(k in msg_lower for k in create_draft_keywords):
         # Find existing prospects for this mission
         prospects = await Prospect.find(Prospect.mission_id == mission_id).to_list()
@@ -1555,8 +1852,8 @@ Mission Objective: {mission.objective}
 GUIDELINES:
 - Address the user's question about the mission.
 - If they ask for status, say "Agents are active".
-- Do NOT generate sample emails here.
-- If they want to change the strategy, acknowledge it (but actual config update is manual for now).
+- If they ask to draft/write content, GUIDE them to use the specific keywords if needed, or simply confirm you will pass it to the agent.
+- If they want to change the strategy, acknowledge it.
 """
 
         messages = [
@@ -1599,6 +1896,39 @@ GUIDELINES:
             "type": "error"
         }
 
+class ChatRequest(BaseModel):
+    message: str
+
+@router.post("/{mission_id}/chat")
+async def chat_with_mission(
+    mission_id: str,
+    chat: ChatRequest,
+    user: User = Depends(get_current_user)
+):
+    """Send a message to the mission agent"""
+    mission = await Mission.get(mission_id)
+    if not mission or mission.user_id != user.clerk_id:
+        raise HTTPException(status_code=404, detail="Mission not found")
+    
+    # 1. Log user message
+    await MissionLog(
+        mission_id=mission_id,
+        role="user",
+        content=chat.message,
+        log_type="chat"
+    ).insert()
+    
+    # 2. Trigger agent
+    # We treat the chat message as a NEW objective/refinement for the agent
+    # The agent's memory (LangGraph checkpoint) will handle context
+    asyncio.create_task(run_mission_agent(mission_id, chat.message, user.clerk_id, []))
+    
+    return {
+        "message": "I'm analyzing your request...",
+        "role": "agent",
+        "type": "thinking",
+        "status": "processing"
+    }
 @router.delete("/{mission_id}")
 async def delete_mission(mission_id: str, user: User = Depends(get_current_user)):
     """Delete a mission and its logs, drafts, and prospects"""

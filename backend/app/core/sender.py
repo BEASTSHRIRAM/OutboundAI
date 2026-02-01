@@ -1,20 +1,35 @@
-from app.core.config import settings
-from composio import Composio
+from app.core.composio_config import get_composio_client
 from typing import Optional
 import os
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log
+)
+import logging
 
-# Lazy initialization to ensure settings are loaded
-_composio_client = None
-
-def get_composio_client():
-    global _composio_client
-    if _composio_client is None:
-        if not settings.COMPOSIO_API_KEY:
-            raise ValueError("COMPOSIO_API_KEY is not set in environment variables")
-        _composio_client = Composio(api_key=settings.COMPOSIO_API_KEY)
-    return _composio_client
+logger = logging.getLogger(__name__)
 
 
+# Custom exceptions for better error handling
+class ComposioAPIError(Exception):
+    """Raised when Composio API returns an error"""
+    pass
+
+
+class EmailSendError(Exception):
+    """Raised when email sending fails"""
+    pass
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+    before_sleep=before_sleep_log(logger, logging.WARNING)
+)
 async def send_email_via_composio(
     user_id: str,
     recipient: str,
@@ -88,22 +103,29 @@ async def send_email_via_composio(
         print(f"Email sent - Composio result: {result}")
         
         # Composio SDK returns a result object with 'successful' key
+        is_success = False
+        response_data = {}
+        
         if hasattr(result, 'successful'):
-            if result.successful:
-                return {"success": True, "data": result}
-            else:
-                error_msg = getattr(result, 'error', None) or str(result)
-                return {"success": False, "error": error_msg}
-        
-        # Handle dict response (older SDK versions)
-        if isinstance(result, dict):
-            if result.get("successful") or result.get("success"):
-                return {"success": True, "data": result}
-            else:
-                return {"success": False, "error": result.get("error") or result.get("message") or "Unknown error"}
-        
-        # If we got here, assume success if no error
-        return {"success": True, "data": result}
+            is_success = result.successful
+            response_data = result.data if hasattr(result, 'data') else {}
+            if not is_success:
+                response_data['error'] = getattr(result, 'error', None) or str(result)
+        elif isinstance(result, dict):
+            is_success = result.get("successful") or result.get("success")
+            response_data = result
+        else:
+            # Fallback for unknown object types
+            is_success = True
+            response_data = {"raw": str(result)}
+            
+        if is_success:
+            print(f"Email sent successfully via Composio: {subject}")
+            return {"success": True, "data": response_data}
+        else:
+            error_msg = response_data.get("error") or response_data.get("message") or "Unknown error from Composio"
+            print(f"Composio send failed: {error_msg}")
+            return {"success": False, "error": error_msg}
     except Exception as e:
         print(f"ERROR: Composio SDK execution failed: {e}")
         return {"success": False, "error": str(e)}
