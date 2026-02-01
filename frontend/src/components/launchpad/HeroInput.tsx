@@ -191,6 +191,7 @@ export function HeroInput() {
         const mission = await api.createMission(objective, mode);
         setQuery("");
         setSelectedAttachments([]);
+        
         toast.success("Mission Launched!", {
           description: "Redirecting to mission control...",
         });
@@ -273,7 +274,7 @@ export function HeroInput() {
 
         <div
           className={cn(
-            "relative flex items-center gap-3 bg-card/90 backdrop-blur-xl border-2 rounded-2xl transition-all duration-300 p-2",
+            "relative flex items-center gap-2 bg-card/90 backdrop-blur-xl border-2 rounded-2xl transition-all duration-300 p-2",
             isFocused
               ? "border-primary/50 shadow-xl shadow-primary/10"
               : "border-border/50 shadow-lg",
@@ -341,13 +342,13 @@ export function HeroInput() {
             size="icon"
             onClick={toggleListening}
             className={cn(
-              "h-12 w-12 rounded-xl transition-all shrink-0",
+              "h-10 w-10 rounded-lg transition-all shrink-0",
               isListening
                 ? "bg-red-500/20 text-red-500 hover:bg-red-500/30 animate-pulse"
                 : "hover:bg-secondary text-muted-foreground hover:text-foreground"
             )}
           >
-            {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
           </Button>
 
           {/* Input Field */}
@@ -360,33 +361,34 @@ export function HeroInput() {
             onKeyDown={(e) => e.key === "Enter" && !showAssetPicker && handleSubmit(e)}
             placeholder={isListening ? "Listening..." : mode === "recruiter" ? "Find Python developers with Django experience..." : "Describe your mission... (type # for assets)"}
             className={cn(
-              "flex-1 bg-transparent text-lg text-foreground placeholder:text-muted-foreground/70 focus:outline-none py-3",
+              "flex-1 bg-transparent text-base text-foreground placeholder:text-muted-foreground/70 focus:outline-none py-2.5",
               isListening && "placeholder:text-red-400"
             )}
           />
 
-          {/* Launch Button */}
           <Button
             type="submit"
             size="lg"
             disabled={!query.trim() || isLoading}
             className={cn(
-              "h-12 px-6 rounded-xl font-semibold transition-all shrink-0 gap-2 text-white",
+              "h-10 px-5 rounded-lg font-semibold transition-all shrink-0 gap-2 text-white",
               query.trim()
-                ? "bg-primary/80 hover:bg-primary shadow-lg shadow-primary/25"
+                ? "bg-primary hover:bg-primary/90 shadow-lg shadow-primary/25"
                 : "bg-secondary text-muted-foreground"
             )}
           >
             {isLoading ? (
-              <Loader2 className="w-5 h-5 animate-spin" />
+              <Loader2 className="w-4 h-4 animate-spin" />
             ) : (
               <>
                 <span>Launch</span>
-                <ArrowRight className="w-5 h-5" />
+                <ArrowRight className="w-4 h-4" />
               </>
             )}
           </Button>
         </div>
+
+
       </form>
 
       {/* Listening indicator */}

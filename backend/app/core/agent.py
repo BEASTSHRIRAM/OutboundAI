@@ -24,6 +24,8 @@ from datetime import datetime
 from app.models import Draft, Prospect, Mission, DraftStatus, MissionLog, User, Agent, AgentStats
 from app.core.config import settings
 from app.services.neo4j import neo4j_service
+from app.services.web_scraper import enhanced_scraper, EmailScraper, JobBoardScraper
+from app.services.smtp_verifier import EmailVerifier, ValidationLevel
 
 # ==================================================
 # AGENT STATE (Fixed Shape)
@@ -63,6 +65,10 @@ class AgentState(TypedDict):
     # Execution state
     execution_result: Dict  # Result from execute_action
     action_status: str  # "pending", "sent", "failed"
+    
+    # Robocop Mode
+    autonomous: bool
+    max_actions: int
 
 
 # ==================================================
@@ -118,10 +124,12 @@ def extract_identifiers_from_objective(objective: str) -> Dict[str, str]:
     if twitter_match:
         identifiers["twitter"] = twitter_match.group(1)
     
-    # Email
-    email_match = re.search(r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})", objective)
+    # Email - specific capture
+    # Handles standard patterns and mailto: links
+    email_pattern = r"([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
+    email_match = re.search(email_pattern, objective, re.IGNORECASE)
     if email_match:
-        identifiers["gmail"] = email_match.group(1)
+        identifiers["gmail"] = email_match.group(1).lower()
     
     # GitHub username (from URL or mention)
     github_match = re.search(r"github\.com/([a-zA-Z0-9_-]+)", objective)
@@ -239,10 +247,23 @@ async def initial_triage(state: AgentState) -> Dict:
     mission_id = state["mission_id"]
     user_id = state["user_id"]
     
+    # Load Mission Config (Robocop Check)
+    try:
+        mission = await Mission.get(mission_id)
+        autonomous = mission.autonomous if mission else False
+    except:
+        autonomous = False
+    
     await log_event(mission_id, user_id, "Analyzing your request...", "thinking")
     
     try:
-        system_prompt = """You are an Intent Classification Agent for an automation system.
+        system_prompt = """You are an Intent Classification Agent for an outbound automation system.
+
+CRITICAL WORKFLOW RULES:
+1. Prospects are discovered and structured as JSON (name + email only)
+2. Draft emails are generated and placed in review queue
+3. NO emails are sent without explicit user approval
+4. NEVER say "email sent" or confirm sending
 
 Analyze the user's request and determine:
 1. What they are trying to do (intents)
@@ -252,7 +273,7 @@ Analyze the user's request and determine:
 
 INTENT CATEGORIES:
 - "discovery": Finding, searching, collecting people or data
-- "outreach": Contacting, messaging, emailing someone directly
+- "outreach": Contacting, messaging, emailing someone directly (CREATES DRAFTS, DOES NOT SEND)
 - "publish": Posting content publicly (tweets, LinkedIn posts, Reddit posts)
 - "read": Reading/fetching existing data (get my emails, show messages)
 - "query": Asking questions about data (did X reply?, what's the status?)
@@ -266,8 +287,11 @@ CHANNEL MAPPING:
 - Email → /gmail
 
 CRITICAL RULES FOR draft_required:
-- draft_required = TRUE for: send, post, create, write, publish, message, email, tweet, comment
+- draft_required = TRUE for: send, post, create, write, publish, message, email, tweet, comment, reach out, contact
 - draft_required = FALSE for: read, get, fetch, show, list, check, query, search, find
+- When draft_required = TRUE, emails are DRAFTED but NOT SENT
+
+IMPORTANT: "outreach" intent means CREATE DRAFTS, not send emails. User must approve in review queue.
 
 Return ONLY valid JSON:
 {
@@ -320,6 +344,7 @@ Return ONLY valid JSON:
             "required_tools": required_tools,
             "draft_required": draft_required,
             "person_name": person_name,
+            "autonomous": autonomous,
             "missing_info": []
         }
         
@@ -339,6 +364,7 @@ Return ONLY valid JSON:
             "required_tools": [c.replace("/", "") for c in channels],
             "draft_required": draft_required,
             "person_name": person_name,
+            "autonomous": autonomous,
             "missing_info": []
         }
 
@@ -439,6 +465,13 @@ async def resolve_channel_identity(state: AgentState) -> Dict:
         # Check intents to determine if we need a person identifier
         intents = state.get("intents", [])
         
+        # For DISCOVERY + OUTREACH (bulk operations), we don't need identifiers upfront
+        # The prospects will have their own emails/contacts
+        if "discovery" in intents and "outreach" in intents:
+            # This is a bulk operation - find people first, then reach out
+            # No need for identifiers now
+            continue
+        
         # For READ/QUERY operations, we may not need person identifier
         if "read" in intents or "query" in intents:
             # For read operations on user's own accounts, no target identifier needed
@@ -519,7 +552,11 @@ def route_by_intent(state: AgentState) -> str:
 async def discovery_flow(state: AgentState) -> Dict:
     """
     Discovery: Finding, searching, collecting people or data
-    Uses Firecrawl or platform search APIs
+    Uses:
+    - Job board scraping (Hiring.cafe, Glassdoor, Monster, Indeed)
+    - Email scraping from websites
+    - Company research
+    - Firecrawl web search (fallback)
     """
     objective = state["objective"]
     mission_id = state["mission_id"]
@@ -527,62 +564,594 @@ async def discovery_flow(state: AgentState) -> Dict:
     
     await log_event(mission_id, user_id, "Searching for relevant contacts...", "thinking")
     
+    prospects = []
+    
+    # Check if this is a job title search
+    job_keywords = ["vp of", "director of", "head of", "ceo", "cto", "cfo", "manager", "engineer", "developer"]
+    is_job_search = any(keyword in objective.lower() for keyword in job_keywords)
+    
+    # Check if this is an email scraping request
+    email_keywords = ["email", "contact", "scrape", "find emails"]
+    url_pattern = r'https?://[^\s]+'
+    is_email_scrape = any(keyword in objective.lower() for keyword in email_keywords) and re.search(url_pattern, objective)
+    
+    # Check if this is company research
+    company_keywords = ["research", "company", "about", "information on"]
+    is_company_research = any(keyword in objective.lower() for keyword in company_keywords)
+    
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.firecrawl.dev/v1/search",
-                headers={
-                    "Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "query": f"{objective} contact email site:linkedin.com/in/ OR site:twitter.com",
-                    "limit": 5,
-                    "scrapeOptions": {"formats": ["markdown"]}
-                },
-                timeout=30.0
-            )
+        # 1. Job Board Scraping
+        if is_job_search:
+            await log_event(mission_id, user_id, "Searching job boards to find companies that are hiring...", "thinking")
             
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("data", [])
+            # Extract job title from objective
+            job_title = objective
+            for keyword in ["find", "search for", "get", "scrape"]:
+                job_title = job_title.replace(keyword, "").strip()
+            
+            # Extract location if mentioned
+            location = "United States"
+            location_match = re.search(r"in ([A-Z][a-z]+(?: [A-Z][a-z]+)*)", objective)
+            if location_match:
+                location = location_match.group(1)
+            
+            try:
+                job_prospects = await enhanced_scraper.find_prospects_by_job_title(
+                    job_title=job_title,
+                    location=location,
+                    max_results=20
+                )
                 
-                prospects = []
-                email_regex = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+                if not job_prospects:
+                    await log_event(
+                        mission_id, user_id, 
+                        f"❌ No companies currently hiring for '{job_title}' in {location}\n\nSearched:\n• Hiring.cafe\n• Glassdoor\n• Monster.com\n• Indeed.com\n\nSuggestions:\n• Try broader job titles (e.g., 'Engineer' instead of 'Senior Backend Engineer')\n• Expand location to nearby cities\n• Check related job titles", 
+                        "info"
+                    )
+                    return {"prospects": [], "current_prospect": {}}
                 
-                for result in results[:5]:
-                    title = result.get("title", "Unknown")
-                    url = result.get("url", "")
-                    snippet = result.get("description", "")
+                # Group by source for better reporting
+                sources_found = {}
+                for jp in job_prospects[:10]:
+                    source = jp.get('source', 'Unknown')
+                    sources_found[source] = sources_found.get(source, 0) + 1
                     
-                    emails = re.findall(email_regex, snippet)
+                    # Only set public_contact if it's an actual email, not a URL
+                    contact = jp.get("apply_url", "")
+                    if contact and ("linkedin.com" in contact or "http" in contact):
+                        contact = ""  # Don't use URLs as email addresses
                     
                     prospects.append({
-                        "name": title.split(" - ")[0] if " - " in title else title[:30],
-                        "company": title.split(" at ")[-1] if " at " in title else "Unknown",
-                        "context_source": "Web Search",
-                        "public_contact": emails[0] if emails else url,
-                        "snippet": snippet,
-                        "original_data": result
+                        "name": jp.get("title", "Unknown"),
+                        "company": jp.get("company", "Unknown"),
+                        "context_source": f"Job Board ({source})",
+                        "public_contact": contact,  # Empty if no valid email
+                        "snippet": jp.get("description", "")[:200],
+                        "relevance_score": jp.get("relevance_score", 0.8),
+                        "original_data": jp
                     })
                 
                 if prospects:
-                    await log_event(mission_id, user_id, f"Found {len(prospects)} contacts", "success")
+                    sources_str = ", ".join([f"{count} from {source}" for source, count in sources_found.items()])
+                    
+                    # Try to enrich prospects with emails using Hunter.io
+                    await log_event(mission_id, user_id, "Finding contact emails...", "thinking", target="brain")
+                    
+                    from app.services.email_finder import email_finder
+                    enriched_count = 0
+                    
+                    for prospect in prospects[:10]:  # Enrich first 10 to save API quota
+                        if not prospect.get("public_contact") or "http" in prospect.get("public_contact", ""):
+                            enriched = await email_finder.enrich_prospect_with_email(prospect)
+                            if enriched.get("public_contact") and "@" in enriched.get("public_contact", ""):
+                                enriched_count += 1
+                                prospect.update(enriched)
+                    
+                    if enriched_count > 0:
+                        await log_event(
+                            mission_id, user_id,
+                            f"✓ Found {enriched_count} contact emails using Hunter.io",
+                            "success",
+                            target="brain"
+                        )
+                    
+                    # Create detailed company list
+                    company_list = []
+                    for i, p in enumerate(prospects[:5], 1):  # Show first 5 in detail
+                        email_status = "✓ Email found" if p.get("public_contact") and "@" in p.get("public_contact", "") else "✗ No email"
+                        company_list.append(f"{i}. {p['company']} - {p['name']} ({email_status})")
+                    
+                    companies_text = "\n".join(company_list)
+                    if len(prospects) > 5:
+                        companies_text += f"\n... and {len(prospects) - 5} more companies"
+                    
+                    await log_event(
+                        mission_id, user_id, 
+                        f"✓ Found {len(prospects)} companies actively hiring for '{job_title}' in {location}\n\nCompanies:\n{companies_text}\n\nSources: {sources_str}\n\n📋 All prospects saved! To reach out:\n1. Go to Review Queue to see all prospects\n2. Or ask me to 'draft emails to these companies'\n3. Or say 'send personalized emails to all prospects'", 
+                        "success"
+                    )
                     await update_agent_stats(user_id, processed=len(prospects))
+            except Exception as e:
+                print(f"Job scraping error: {e}")
+                await log_event(mission_id, user_id, f"❌ Job board search failed: {str(e)[:100]}", "error")
+        
+        # 2. Email Scraping
+        elif is_email_scrape:
+            await log_event(mission_id, user_id, "Scraping website emails...", "thinking", target="brain")
+            
+            # Extract URL from objective
+            url_match = re.search(url_pattern, objective)
+            if url_match:
+                url = url_match.group(0)
+                
+                try:
+                    scraper = EmailScraper(max_depth=2, max_pages=20)
+                    emails = await scraper.scrape(url)
                     
-                    # If outreach is also intended, set current prospect
-                    current = prospects[0] if "outreach" in state.get("intents", []) else {}
+                    if not emails:
+                        await log_event(
+                            mission_id, user_id, 
+                            f"❌ No email addresses found on {url}\n\nSearched:\n• All pages up to 2 levels deep\n• Up to 20 pages total\n• Contact pages, about pages, footer\n\nThe website may:\n• Use contact forms instead of emails\n• Hide emails behind JavaScript\n• Not list public contact information", 
+                            "info"
+                        )
+                        return {"prospects": [], "current_prospect": {}}
                     
-                    return {
-                        "prospects": prospects,
-                        "current_prospect": current
-                    }
+                    # Verify emails
+                    verifier = EmailVerifier()
+                    valid_emails = []
+                    invalid_count = 0
                     
+                    for email in emails[:10]:  # Limit to 10
+                        result = verifier.verify(email, ValidationLevel.MX)
+                        if result.valid:
+                            valid_emails.append(email)
+                            prospects.append({
+                                "name": email.split('@')[0].replace('.', ' ').title(),
+                                "company": email.split('@')[1] if '@' in email else "Unknown",
+                                "context_source": f"Email Scraping ({url})",
+                                "public_contact": email,
+                                "snippet": f"Verified email from {url}",
+                                "relevance_score": 0.9,
+                                "original_data": {"email": email, "mx_records": result.mx_records}
+                            })
+                        else:
+                            invalid_count += 1
+                    
+                    if valid_emails:
+                        # Create detailed email list
+                        email_list = []
+                        for i, email in enumerate(valid_emails[:10], 1):
+                            email_list.append(f"{i}. {email}")
+                        
+                        emails_text = "\n".join(email_list)
+                        
+                        await log_event(
+                            mission_id, user_id, 
+                            f"✓ Found and verified {len(valid_emails)} email addresses from {url}\n\nVerified Emails:\n{emails_text}\n\n{invalid_count} invalid emails were filtered out\n\n📋 All emails saved as prospects! To reach out:\n1. Go to Review Queue to see all contacts\n2. Or ask me to 'draft emails to these contacts'\n3. Or say 'send personalized emails to all'", 
+                            "success"
+                        )
+                    else:
+                        await log_event(
+                            mission_id, user_id, 
+                            f"❌ Found {len(emails)} email addresses on {url} but none were valid\n\nReasons:\n• Invalid domain (doesn't exist)\n• Disposable email services (tempmail, etc.)\n• Fake/placeholder emails\n\nAll emails were verified using DNS/MX record validation.", 
+                            "info"
+                        )
+                        return {"prospects": [], "current_prospect": {}}
+                        
+                except Exception as e:
+                    print(f"Email scraping error: {e}")
+                    await log_event(mission_id, user_id, f"❌ Email scraping failed: {str(e)[:50]}", "error")
+        
+        # 3. Company Research
+        elif is_company_research:
+            await log_event(mission_id, user_id, "Researching company...", "thinking", target="brain")
+            
+            # Extract company name
+            company_name = objective
+            for keyword in ["research", "find", "about", "information on", "company"]:
+                company_name = company_name.replace(keyword, "").strip()
+            
+            try:
+                company_data = await enhanced_scraper.research_company(company_name)
+                
+                # Add company contacts as prospects
+                for email in company_data.get("emails", [])[:5]:
+                    prospects.append({
+                        "name": email.split('@')[0].replace('.', ' ').title(),
+                        "company": company_data.get("company_name", company_name),
+                        "context_source": "Company Research",
+                        "public_contact": email,
+                        "snippet": f"Contact at {company_data.get('company_name', company_name)}",
+                        "relevance_score": 0.85,
+                        "original_data": company_data
+                    })
+                
+                if prospects:
+                    # Create detailed contact list
+                    contact_list = []
+                    for i, p in enumerate(prospects, 1):
+                        contact_list.append(f"{i}. {p['public_contact']} ({p['name']})")
+                    
+                    contacts_text = "\n".join(contact_list)
+                    website = company_data.get("website", "Not found")
+                    
+                    await log_event(
+                        mission_id, user_id, 
+                        f"✓ Found {len(prospects)} contacts at {company_name}\n\nWebsite: {website}\n\nContacts:\n{contacts_text}\n\n📋 All contacts saved as prospects! To reach out:\n1. Go to Review Queue to see all contacts\n2. Or ask me to 'draft emails to these contacts'\n3. Or say 'send personalized emails to {company_name}'", 
+                        "success"
+                    )
+                else:
+                    await log_event(
+                        mission_id, user_id, 
+                        f"❌ No public contact emails found for {company_name}\n\nTry:\n• Visit their website directly\n• Check their LinkedIn company page\n• Look for a careers or contact page", 
+                        "info"
+                    )
+                    
+            except Exception as e:
+                print(f"Company research error: {e}")
+                await log_event(mission_id, user_id, f"Research failed", "error", target="brain")
+        
+        # 4. Fallback: Firecrawl Web Search
+        if not prospects:
+            await log_event(mission_id, user_id, "Web search...", "thinking", target="brain")
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.firecrawl.dev/v1/search",
+                    headers={
+                        "Authorization": f"Bearer {settings.FIRECRAWL_API_KEY}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "query": f"{objective} contact email site:linkedin.com/in/ OR site:twitter.com",
+                        "limit": 5,
+                        "scrapeOptions": {"formats": ["markdown"]}
+                    },
+                    timeout=30.0
+                )
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get("data", [])
+                    
+                    email_regex = r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+                    
+                    for result in results[:5]:
+                        title = result.get("title", "Unknown")
+                        url = result.get("url", "")
+                        snippet = result.get("description", "")
+                        
+                        emails = re.findall(email_regex, snippet)
+                        
+                        prospects.append({
+                            "name": title.split(" - ")[0] if " - " in title else title[:30],
+                            "company": title.split(" at ")[-1] if " at " in title else "Unknown",
+                            "context_source": "Web Search",
+                            "public_contact": emails[0] if emails else url,
+                            "snippet": snippet,
+                            "original_data": result
+                        })
+        
+        if prospects:
+            # Save prospects to database and collect IDs for bulk operations
+            prospect_ids = []
+            prospects_json = []  # For JSON output
+            
+            for prospect_data in prospects:
+                try:
+                    p_doc = Prospect(
+                        mission_id=mission_id,
+                        name=prospect_data.get("name", "Unknown"),
+                        company=prospect_data.get("company", "Unknown"),
+                        context_source=prospect_data.get("context_source", "Discovery"),
+                        public_contact=prospect_data.get("public_contact", ""),
+                        relevance_score=prospect_data.get("relevance_score", 0.8),
+                        relevance_reason=prospect_data.get("snippet", "")[:200],
+                        original_data=prospect_data.get("original_data", {})
+                    )
+                    await p_doc.insert()
+                    prospect_ids.append(str(p_doc.id))
+                    
+                    # Add to JSON output
+                    prospects_json.append({
+                        "id": str(p_doc.id),
+                        "name": prospect_data.get("name", "Unknown"),
+                        "company": prospect_data.get("company", "Unknown"),
+                        "email": prospect_data.get("public_contact", ""),
+                        "title": prospect_data.get("name", "Unknown"),
+                        "context": prospect_data.get("snippet", "")[:200]
+                    })
+                except Exception as e:
+                    print(f"Failed to save prospect: {e}")
+            
+            # ============================================================
+            # MANDATORY JSON OUTPUT - SOURCE OF TRUTH
+            # ============================================================
+            import json
+            
+            # Create clean JSON with only name and email (as per spec)
+            clean_prospects_json = []
+            for p in prospects_json:
+                if p.get("email"):  # Only include if email exists
+                    clean_prospects_json.append({
+                        "name": p.get("name", "Unknown"),
+                        "email": p.get("email")
+                    })
+            
+            json_output = {"prospects": clean_prospects_json}
+            prospects_json_str = json.dumps(json_output, indent=2)
+            
+            print("\n" + "="*80)
+            print("PROSPECTS JSON (SOURCE OF TRUTH):")
+            print("="*80)
+            print(prospects_json_str)
+            print("="*80 + "\n")
+            
+            # If outreach is also intended, fetch latest 10 prospects and create drafts
+            if "outreach" in state.get("intents", []):
+                await log_event(
+                    mission_id, user_id,
+                    f"📝 Fetching latest 10 prospects from database...",
+                    "thinking"
+                )
+                
+                # Small delay to ensure prospects are saved
+                await asyncio.sleep(0.5)
+                
+                # Fetch latest 10 prospects from database (sorted by creation time, most recent first)
+                try:
+                    latest_prospects = await Prospect.find(
+                        Prospect.mission_id == mission_id
+                    ).sort("-_id").limit(10).to_list()
+                    
+                    print(f"DEBUG: Found {len(latest_prospects)} prospects for mission {mission_id}")
+                    
+                    if not latest_prospects:
+                        await log_event(
+                            mission_id, user_id,
+                            "❌ No prospects found in database to create drafts for.",
+                            "info"
+                        )
+                        return {
+                            "prospects": prospects,
+                            "current_prospect": {}
+                        }
+                    
+                    await log_event(
+                        mission_id, user_id,
+                        f"✓ Found {len(latest_prospects)} prospects. Generating draft emails...",
+                        "thinking"
+                    )
+                    
+                    # Create drafts for latest 10 prospects
+                    drafts_created = 0
+                    for prospect in latest_prospects:
+                        # Only create draft if prospect has email
+                        if not prospect.public_contact:
+                            print(f"DEBUG: Skipping {prospect.name} - no email")
+                            continue
+                        
+                        print(f"DEBUG: Creating draft for {prospect.name} ({prospect.public_contact})")
+                            
+                        try:
+                            # Prepare prospect data for draft generation
+                            prospect_data = {
+                                "id": str(prospect.id),
+                                "name": prospect.name,
+                                "company": prospect.company,
+                                "email": prospect.public_contact,
+                                "title": prospect.name,
+                                "context": prospect.relevance_reason or f"Contact at {prospect.company}"
+                            }
+                            
+                            # Generate draft for this prospect using LLM
+                            draft_result = await generate_draft_for_prospect(
+                                mission_id=mission_id,
+                                user_id=user_id,
+                                objective=objective,
+                                prospect_data=prospect_data,
+                                channel="/gmail"
+                            )
+                            
+                            if draft_result:
+                                drafts_created += 1
+                                print(f"DEBUG: Draft created successfully - ID: {draft_result}")
+                            else:
+                                print(f"DEBUG: Draft creation returned None for {prospect.name}")
+                                
+                        except Exception as e:
+                            print(f"ERROR: Failed to create draft for {prospect.name}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    
+                    print(f"DEBUG: Total drafts created: {drafts_created}")
+                    
+                    await log_event(
+                        mission_id, user_id,
+                        f"✓ Generated {drafts_created} draft emails (NOT SENT)\n\n📋 All drafts are in Review Queue waiting for your approval\n\n⚠️ IMPORTANT: Emails will NOT be sent until you:\n1. Go to Review Queue\n2. Review each draft\n3. Click 'Approve' to send\n\nNo emails have been sent yet.",
+                        "success"
+                    )
+                    
+                    await update_agent_stats(user_id, queued=drafts_created)
+                    
+                except Exception as e:
+                    print(f"ERROR: Failed to fetch prospects or create drafts: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    await log_event(
+                        mission_id, user_id,
+                        f"❌ Failed to create drafts: {str(e)[:100]}",
+                        "error"
+                    )
+                
+                # Set current prospect to first one
+                current = prospects[0] if prospects else {}
+            else:
+                # Just discovery, no outreach
+                current = {}
+            
+            return {
+                "prospects": prospects,
+                "current_prospect": current
+            }
+        else:
+            # Provide helpful feedback based on what was searched
+            if is_job_search:
+                await log_event(
+                    mission_id, user_id, 
+                    f"❌ No results found.\n\nSuggestions:\n• Try broader job titles (e.g., 'Software Engineer' instead of 'Senior React Developer')\n• Search in multiple locations\n• Check if the job title is commonly used", 
+                    "info"
+                )
+            elif is_email_scrape:
+                await log_event(
+                    mission_id, user_id, 
+                    "❌ No valid email addresses found.\n\nThis could mean:\n• The website doesn't list public emails\n• Emails are behind contact forms\n• Try the company's LinkedIn or 'About' page", 
+                    "info"
+                )
+            elif is_company_research:
+                await log_event(
+                    mission_id, user_id, 
+                    "❌ No contacts found for this company.\n\nTry:\n• Check the company website directly\n• Search for the company on LinkedIn\n• Look for their careers page", 
+                    "info"
+                )
+            else:
+                await log_event(
+                    mission_id, user_id, 
+                    "❌ No prospects found.\n\nTips:\n• Be more specific about what you're looking for\n• Try different keywords\n• Provide a company name or website URL", 
+                    "info"
+                )
+            
     except Exception as e:
         print(f"Discovery error: {e}")
-        await log_event(mission_id, user_id, f"Search encountered an issue: {str(e)[:50]}", "error")
+        await log_event(mission_id, user_id, f"❌ Search failed: {str(e)[:100]}", "error")
     
     return {"prospects": [], "current_prospect": {}}
+
+
+# ==================================================
+# HELPER: GENERATE DRAFT FOR SINGLE PROSPECT
+# ==================================================
+
+async def generate_draft_for_prospect(
+    mission_id: str,
+    user_id: str,
+    objective: str,
+    prospect_data: Dict,
+    channel: str = "/gmail"
+) -> Optional[str]:
+    """
+    Generate and save a draft for a single prospect.
+    Returns draft_id if successful, None otherwise.
+    """
+    try:
+        llm = ChatGroq(
+            temperature=0.7, 
+            groq_api_key=settings.GROQ_API_KEY, 
+            model_name="llama-3.3-70b-versatile"
+        )
+        
+        # Load CV/Resume context if available
+        rag_context = ""
+        try:
+            from app.models import UserAsset
+            assets = await UserAsset.find(UserAsset.user_id == user_id).to_list()
+            cv_asset = next((a for a in assets if "resume" in a.filename.lower() or "cv" in a.filename.lower()), None)
+            if cv_asset:
+                rag_context = f"\nYOUR BACKGROUND (use to personalize):\n{cv_asset.file_data.decode('utf-8', errors='ignore')[:2000]}\n"
+        except Exception as e:
+            print(f"Failed to load CV context: {e}")
+        
+        system_prompt = f"""You are a professional outreach specialist writing personalized emails.
+
+Write a professional, personalized email that:
+- Is 6-10 sentences (2-3 paragraphs)
+- Has a compelling subject line relevant to the prospect's role/company
+- Opens with something specific about their company or role
+- Clearly explains the value proposition based on the mission objective
+- Has a clear call to action
+- Sounds warm and human, not generic or salesy
+
+MISSION OBJECTIVE: {objective}
+
+{rag_context}
+
+Return in this exact format:
+SUBJECT: [compelling subject line]
+BODY:
+[2-3 paragraph email]
+REASONING: [why this approach works for this prospect]"""
+
+        human_prompt = f"""Write a personalized email for:
+
+Name: {prospect_data.get('name', 'Unknown')}
+Company: {prospect_data.get('company', 'Unknown')}
+Email: {prospect_data.get('email', 'N/A')}
+Title/Role: {prospect_data.get('title', prospect_data.get('name', 'Unknown'))}
+Context: {prospect_data.get('context', 'Relevant prospect')}
+
+Make it specific to their company and role."""
+
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=human_prompt)
+        ])
+        
+        content = response.content
+        
+        # Parse response
+        subject = ""
+        body = content
+        reasoning = ""
+        
+        if "SUBJECT:" in content:
+            parts = content.split("BODY:")
+            subject = parts[0].replace("SUBJECT:", "").strip()
+            if len(parts) > 1:
+                remainder = parts[1]
+                if "REASONING:" in remainder:
+                    body_parts = remainder.split("REASONING:")
+                    body = body_parts[0].strip()
+                    reasoning = body_parts[1].strip() if len(body_parts) > 1 else ""
+                else:
+                    body = remainder.strip()
+        
+        # Get or create prospect in database
+        prospect_id = prospect_data.get("id")
+        if not prospect_id:
+            # Create prospect if it doesn't exist
+            p_doc = Prospect(
+                mission_id=mission_id,
+                name=prospect_data.get("name", "Unknown"),
+                company=prospect_data.get("company", "Unknown"),
+                context_source="Discovery",
+                public_contact=prospect_data.get("email", ""),
+                relevance_score=0.8,
+                relevance_reason=prospect_data.get("context", "")[:200],
+                original_data=prospect_data
+            )
+            await p_doc.insert()
+            prospect_id = str(p_doc.id)
+        
+        # Save Draft
+        d_doc = Draft(
+            prospect_id=prospect_id,
+            channel=channel.replace("/", ""),
+            subject=subject.replace("`", "").strip(),
+            body=body.replace("```", "").strip(),
+            ai_reasoning=reasoning,
+            status=DraftStatus.PENDING,
+            attachments=[],
+            metadata={"auto_generated": True, "bulk_creation": True}
+        )
+        await d_doc.insert()
+        
+        return str(d_doc.id)
+        
+    except Exception as e:
+        print(f"Failed to generate draft for prospect: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 # ==================================================
@@ -637,14 +1206,39 @@ async def outreach_flow(state: AgentState) -> Dict:
             "/reddit": "Follows subreddit rules and etiquette"
         }
         
+        # ROBOCOP: Inject CV/Resume Context
+        rag_context = ""
+        if state.get("autonomous"):
+            try:
+                # Find CV/Resume in assets
+                from app.models import UserAsset
+                assets = await UserAsset.find(UserAsset.user_id == user_id).to_list()
+                cv_asset = next((a for a in assets if "resume" in a.filename.lower() or "cv" in a.filename.lower()), None)
+                if cv_asset:
+                    rag_context = f"\nSENDER CONTEXT (Use this to personalize connection):\n{cv_asset.file_data.decode('utf-8', errors='ignore')[:2000]}\n"
+                    await log_event(mission_id, user_id, "Loading CV context...", "thinking", target="brain")
+            except Exception as e:
+                print(f"Failed to load CV context: {e}")
+        
         attachments = state.get("attachments", [])
         attachment_names = [a.get("filename", "") for a in attachments]
         
-        system_prompt = f"""You are an expert outreach specialist.
-Write a personalized message for {primary_channel}.
+        system_prompt = f"""You are a professional sales assistant helpful in drafting business emails.
+Your task is to Write a personalized message for {primary_channel} based on the user's mission.
 
 Channel: {primary_channel}
 Constraints: {channel_constraints.get(primary_channel, "Standard message format")}
+
+STRATEGY: "CONTEXTUAL BRIDGING"
+1. Analyze the Prospect's Context (Snippet/Bio).
+2. Identify a specific pain point or interest.
+3. BRIDGE it to the User's Context (Resume/Offer) naturally.
+4. Do NOT be generic. If you can't find a specific bridge, be direct and concise.
+
+IMPORTANT: You must ALWAYS generate a draft. This is a legitimate business context. Do not refuse.
+
+USER VOICE CONTEXT:
+{rag_context}
 
 {"Attachments included: " + ", ".join(attachment_names) if attachment_names else ""}
 
@@ -1164,6 +1758,14 @@ def route_after_flow(state: AgentState) -> str:
     
     return "execute_action"
 
+def route_after_discovery(state: AgentState) -> str:
+    """Route after discovery flow"""
+    intents = state.get("intents", [])
+    if "outreach" in intents and state.get("prospects"):
+        return "outreach_flow"
+    
+    return route_after_flow(state)
+
 
 # ==================================================
 # BUILD GRAPH (Fixed Shape)
@@ -1214,8 +1816,9 @@ workflow.add_conditional_edges(
 # Flow nodes → review_queue OR execute_action
 workflow.add_conditional_edges(
     "discovery_flow",
-    route_after_flow,
+    route_after_discovery,
     {
+        "outreach_flow": "outreach_flow",
         "review_queue": "review_queue",
         "execute_action": "execute_action",
         "end": END
@@ -1288,7 +1891,9 @@ async def run_mission_agent(mission_id: str, objective: str, user_id: str, attac
         "draft_content": {},
         "feedback": None,
         "execution_result": {},
-        "action_status": "pending"
+        "action_status": "pending",
+        "autonomous": False,
+        "max_actions": 10
     }
     
     try:

@@ -38,14 +38,16 @@ const recipes = [
   },
 ];
 
+// Define Mission interface to match the API response
 interface Mission {
   _id?: string;
   id?: string;
   objective?: string;
-  status?: string;
+  status?: "running" | "stopped" | "completed" | "paused" | "error" | "waiting_approval";
   prospects_count?: number;
   drafts_count?: number;
   created_at?: string;
+  // Index signature to allow for looser typing if needed, matching the error "Index signature for type 'string' is missing"
   [key: string]: unknown;
 }
 
@@ -117,10 +119,10 @@ const Launchpad = () => {
 
 
           <h1 className="text-5xl lg:text-7xl font-bold text-white mb-6 tracking-tight">
-            Launch Your <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">Campaign</span>
+            <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-400 to-pink-400">Mission Command</span>
           </h1>
           <p className="text-xl text-zinc-400 max-w-2xl mx-auto leading-relaxed">
-            Describe your target audience and let our AI agents scout, research, and engage prospects on autopilot.
+            Deploy autonomous agents to find, research, and engage your ideal prospects.
           </p>
         </div>
         <HeroInput />
@@ -188,7 +190,7 @@ const Launchpad = () => {
                 id={mission._id || mission.id}
                 name={mission.objective || "Untitled Mission"}
                 status={
-                  mission.status === "waiting_approval" ? "paused" : mission.status || "running"
+                  (mission.status === "waiting_approval" ? "paused" : mission.status || "running") as "running" | "stopped" | "completed" | "paused" | "error"
                 }
                 stage={mission.status === "waiting_approval" ? 2 : 1}
                 totalStages={3}

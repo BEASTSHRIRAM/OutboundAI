@@ -291,8 +291,7 @@ export default function MissionChat() {
                         // Load chat history
                         try {
                             const logs = await api.getMissionLogs(missionId);
-                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                            const historyMessages: Message[] = logs.map((log: any) => ({
+                            const historyMessages: Message[] = logs.map((log) => ({
                                 id: log.id,
                                 role: log.role as "user" | "agent" | "system",
                                 content: log.content,
@@ -555,7 +554,7 @@ export default function MissionChat() {
     };
 
     return (
-        <div className="h-full flex flex-col bg-black">
+        <div className="h-full flex flex-col bg-black bg-[radial-gradient(ellipse_80%_80%_at_50%_-20%,rgba(120,119,198,0.3),rgba(255,255,255,0))]">
             {/* Header */}
             <header className="flex items-center gap-4 px-6 h-14 border-b border-border bg-card/50">
                 <Button variant="ghost" size="icon" onClick={() => navigate("/dashboard")}>
@@ -617,13 +616,13 @@ export default function MissionChat() {
                                         : "bg-card border border-border"
                             )}>
                                 {message.role === "agent" || message.role === "system" ? (
-                                    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 text-foreground prose-p:text-foreground prose-li:text-foreground prose-headings:text-foreground prose-a:text-blue-400 prose-a:no-underline hover:prose-a:text-blue-300 hover:prose-a:underline prose-strong:text-foreground">
+                                    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 text-white prose-p:text-white prose-li:text-white prose-headings:text-white prose-strong:text-white">
                                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                             {message.content}
                                         </ReactMarkdown>
                                     </div>
                                 ) : (
-                                    <p className="text-sm">{message.content}</p>
+                                    <p className="text-sm text-white">{message.content}</p>
                                 )}
                                 {(() => {
                                     // Check for connect_url in metadata (direct OAuth link)
@@ -639,8 +638,11 @@ export default function MissionChat() {
 
                                     if (toolMatch) {
                                         const displayName = toolMatch.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                                        // If there's a connect_url, backend is asking to connect - override isConnected check
-                                        const connected = connectUrl ? false : isConnected(toolMatch);
+                                        
+                                        // If backend sent "connect_tool" action, connection is NOT active
+                                        // (even if conn_id exists in user profile - it might be expired)
+                                        const needsConnection = message.metadata?.action === "connect_tool";
+                                        const connected = !needsConnection && isConnected(toolMatch);
 
                                         return (
                                             <div className="mt-3">
@@ -654,27 +656,23 @@ export default function MissionChat() {
                                                         <CheckCircle className="w-4 h-4" />
                                                         {displayName} Connected
                                                     </Button>
-                                                ) : connectUrl ? (
-                                                    // Direct OAuth link - will redirect back with pending_action
+                                                ) : (
+                                                    // Always use Composio OAuth - blue button
                                                     <Button
                                                         variant="default"
                                                         size="sm"
-                                                        className="w-full gap-2 animate-in fade-in zoom-in duration-300 shadow-md bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700"
+                                                        className="w-full gap-2 animate-in fade-in zoom-in duration-300 shadow-md bg-blue-600 hover:bg-blue-700"
                                                         onClick={() => {
-                                                            window.location.href = connectUrl;
+                                                            // If we have a direct connect URL, use it
+                                                            if (connectUrl) {
+                                                                window.location.href = connectUrl;
+                                                            } else {
+                                                                // Otherwise, call handleConnect which will get the OAuth URL
+                                                                handleConnect(toolMatch);
+                                                            }
                                                         }}
                                                     >
                                                         <ExternalLink className="w-4 h-4" />
-                                                        Connect {displayName} & Post Automatically
-                                                    </Button>
-                                                ) : (
-                                                    <Button
-                                                        variant="default"
-                                                        size="sm"
-                                                        className="w-full gap-2 animate-in fade-in zoom-in duration-300 shadow-md"
-                                                        onClick={() => handleConnect(toolMatch)}
-                                                    >
-                                                        <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
                                                         Connect {displayName}
                                                     </Button>
                                                 )}
@@ -683,6 +681,82 @@ export default function MissionChat() {
                                     }
                                     return null;
                                 })()}
+                                {/* Create Drafts Button for bulk prospect workflow */}
+                                {message.metadata?.action === "prospects_found" && message.metadata?.prospect_ids && (
+                                    <div className="mt-3">
+                                        <Button
+                                            variant="default"
+                                            size="sm"
+                                            className="w-full gap-2 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 shadow-md"
+                                            onClick={async () => {
+                                                const prospectIds = message.metadata?.prospect_ids as string[];
+                                                if (!prospectIds || !missionId) return;
+
+                                                // Show loading state
+                                                setMessages(prev => prev.map(m =>
+                                                    m.id === message.id
+                                                        ? { ...m, metadata: { ...m.metadata, creating: true } }
+                                                        : m
+                                                ));
+
+                                                try {
+                                                    const result = await api.createBulkDrafts(missionId, prospectIds);
+                                                    
+                                                    setMessages(prev => {
+                                                        const updated = prev.map(m =>
+                                                            m.id === message.id
+                                                                ? { ...m, metadata: { ...m.metadata, creating: false, created: true } }
+                                                                : m
+                                                        );
+                                                        return [...updated, {
+                                                            id: `result-${Date.now()}`,
+                                                            role: "agent" as const,
+                                                            content: result.message,
+                                                            timestamp: new Date(),
+                                                            status: "complete" as const
+                                                        }];
+                                                    });
+
+                                                    toast.success("Drafts Created!", {
+                                                        description: `${result.created_count} personalized drafts ready for review`,
+                                                    });
+
+                                                    // Navigate to review queue after a short delay
+                                                    setTimeout(() => {
+                                                        navigate(`/review?mission_id=${missionId}`);
+                                                    }, 1500);
+                                                } catch (e: unknown) {
+                                                    setMessages(prev => prev.map(m =>
+                                                        m.id === message.id
+                                                            ? { ...m, metadata: { ...m.metadata, creating: false } }
+                                                            : m
+                                                    ));
+                                                    toast.error("Failed to create drafts", {
+                                                        description: (e as Error).message
+                                                    });
+                                                }
+                                            }}
+                                            disabled={message.metadata?.creating || message.metadata?.created}
+                                        >
+                                            {message.metadata?.creating ? (
+                                                <>
+                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                    Creating Drafts...
+                                                </>
+                                            ) : message.metadata?.created ? (
+                                                <>
+                                                    <CheckCircle className="w-4 h-4" />
+                                                    Drafts Created!
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <Send className="w-4 h-4" />
+                                                    Create Drafts for All ({message.metadata?.count || 0})
+                                                </>
+                                            )}
+                                        </Button>
+                                    </div>
+                                )}
                                 {/* Social Media Draft Preview with Post Now + Edit buttons */}
                                 {message.metadata?.action === "draft_preview" && (
                                     <div className="mt-3 flex gap-2">

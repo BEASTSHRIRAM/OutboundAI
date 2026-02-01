@@ -109,10 +109,11 @@
     font-family: 'JetBrains Mono', monospace;
   }
 
-  /* Global Scrollbar Styling */
+  /* Global Scrollbar Styling - Hidden as requested */
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 0px;
+    height: 0px;
+    display: none;
   }
 
   ::-webkit-scrollbar-track {
@@ -224,6 +225,15 @@
 
   .hero-input-glow:focus-within::before {
     opacity: 0.5;
+  }
+
+  /* Ensure code blocks in prose are visible */
+  .prose :where(code):not(:where([class~="not-prose"] *)) {
+    color: #e2e8f0 !important;
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    padding: 0.2em 0.4em;
+    border-radius: 0.25rem;
+    font-weight: 500;
   }
 }
 
