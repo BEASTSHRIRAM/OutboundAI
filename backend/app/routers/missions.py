@@ -72,6 +72,7 @@ def sanitize_json_string(content: str) -> str:
 class MissionCreate(BaseModel):
     objective: str
     attachments: Optional[List[Dict]] = []  # List of {asset_id, filename, content_type}
+    mode: Optional[str] = "task"  # "task", "search", or "recruiter"
 
 # Direct action patterns - bypass agent workflow for these
 DIRECT_ACTION_PATTERNS = {
@@ -431,7 +432,7 @@ Set ready=false if recipient email is unclear.{rag_injection}"""),
 
 @router.post("/", response_model=Mission)
 async def create_mission(mission_in: MissionCreate, user: User = Depends(get_current_user)):
-    mission = Mission(user_id=user.clerk_id, objective=mission_in.objective)
+    mission = Mission(user_id=user.clerk_id, objective=mission_in.objective, mode=mission_in.mode or "task")
     await mission.insert()
     
     mission_id = str(mission.id)
@@ -440,28 +441,39 @@ async def create_mission(mission_in: MissionCreate, user: User = Depends(get_cur
     attachment_msg = ""
     if mission_in.attachments:
         attachment_msg = f" with {len(mission_in.attachments)} attachment(s)"
+    
+    mode = mission_in.mode or "task"
+    mode_label = "Recruiter" if mode == "recruiter" else "Task"
+    
     initial_log = MissionLog(
         mission_id=mission_id,
         role="system",
-        content=f"Mission started: {mission_in.objective}{attachment_msg}",
+        content=f"{mode_label} mission started: {mission_in.objective}{attachment_msg}",
         log_type="success"
     )
     await initial_log.insert()
     
-    # Check if this is a direct action (post, tweet, etc.) - execute immediately
-    action_result = await detect_and_execute_direct_action(
-        mission_in.objective, 
-        mission_id, 
-        user, 
-        attachments=mission_in.attachments
-    )
-    
-    if action_result and action_result.get("handled"):
-        # Direct action was handled, don't start agent workflow
-        return mission
-    
-    # Not a direct action - trigger background agent for outreach workflow
-    asyncio.create_task(run_mission_agent(mission_id, mission_in.objective, user.clerk_id, mission_in.attachments or []))
+    # Route based on mode
+    if mode == "recruiter":
+        # Use recruiter agent
+        from app.core.recruiter_agent import run_recruiter_agent
+        asyncio.create_task(run_recruiter_agent(mission_id, mission_in.objective, user.clerk_id))
+    else:
+        # Use task agent (existing workflow)
+        # Check if this is a direct action (post, tweet, etc.) - execute immediately
+        action_result = await detect_and_execute_direct_action(
+            mission_in.objective, 
+            mission_id, 
+            user, 
+            attachments=mission_in.attachments
+        )
+        
+        if action_result and action_result.get("handled"):
+            # Direct action was handled, don't start agent workflow
+            return mission
+        
+        # Not a direct action - trigger background agent for outreach workflow
+        asyncio.create_task(run_mission_agent(mission_id, mission_in.objective, user.clerk_id, mission_in.attachments or []))
     
     return mission
 
@@ -672,6 +684,13 @@ async def chat_with_mission(mission_id: str, chat: ChatMessage, user: User = Dep
         log_type="action"
     )
     await user_log.insert()
+    
+    # CHECK IF THIS IS A RECRUITER MODE MISSION
+    if mission.mode == "recruiter":
+        # Continue recruiter conversation
+        from app.core.recruiter_agent import continue_recruiter_agent
+        asyncio.create_task(continue_recruiter_agent(mission_id, chat.message, user.clerk_id))
+        return {"message": "Finding candidates...", "role": "agent", "type": "thinking"}
 
     msg_lower = chat.message.lower()
     

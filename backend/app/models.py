@@ -35,6 +35,7 @@ class Mission(Document):
     user_id: str # Link to User.clerk_id or User.id
     objective: str
     status: str = "running"
+    mode: str = "task"  # "task", "search", or "recruiter"
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
     class Settings:

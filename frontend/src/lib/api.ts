@@ -41,10 +41,10 @@ export function useApi() {
         },
 
         // Missions
-        createMission: async (objective: string, attachments: Attachment[] = []) => {
+        createMission: async (objective: string, mode: "task" | "recruiter" = "task", attachments: Attachment[] = []) => {
             const res = await fetchWithAuth("/missions/", {
                 method: "POST",
-                body: JSON.stringify({ objective, attachments }),
+                body: JSON.stringify({ objective, mode, attachments }),
             });
             if (!res.ok) {
                 const error = await res.json();

@@ -271,13 +271,13 @@ export function LiveBrainSidebar({ isOpen, onToggle }: LiveBrainSidebarProps) {
                         variant="secondary"
                         className={cn(
                           "font-mono text-[9px] px-1.5 py-0 h-4",
-                          typeConfig[log.type].badge
+                          typeConfig[log.type]?.badge || "bg-secondary/20 text-secondary-foreground"
                         )}
                       >
-                        {typeConfig[log.type].label}
+                        {typeConfig[log.type]?.label || "INFO"}
                       </Badge>
                     </div>
-                    <p className={cn("font-mono text-xs leading-relaxed", typeConfig[log.type].color)}>
+                    <p className={cn("font-mono text-xs leading-relaxed", typeConfig[log.type]?.color || "text-foreground")}>
                       <span className="text-muted-foreground">&gt;</span> {log.message}
                     </p>
                   </div>

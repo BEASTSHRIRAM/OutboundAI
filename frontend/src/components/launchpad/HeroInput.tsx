@@ -1,10 +1,16 @@
 import { useState, useRef, useEffect } from "react";
-import { Loader2, Mic, MicOff, Paperclip, ArrowRight } from "lucide-react";
+import { Loader2, Mic, MicOff, Paperclip, ArrowRight, ChevronDown, Zap, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useApi } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 // Extend Window interface for Web Speech API
 interface Asset {
@@ -31,6 +37,7 @@ export function HeroInput() {
   const [showAssetPicker, setShowAssetPicker] = useState(false);
   const [availableAssets, setAvailableAssets] = useState<Asset[]>([]);
   const [selectedAttachments, setSelectedAttachments] = useState<Asset[]>([]);
+  const [mode, setMode] = useState<"task" | "recruiter">("task");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const api = useApi();
   const navigate = useNavigate();
@@ -181,7 +188,7 @@ export function HeroInput() {
           objective += ` [Attachments: ${selectedAttachments.map((a) => a.filename).join(", ")}]`;
         }
 
-        const mission = await api.createMission(objective);
+        const mission = await api.createMission(objective, mode);
         setQuery("");
         setSelectedAttachments([]);
         toast.success("Mission Launched!", {
@@ -273,6 +280,60 @@ export function HeroInput() {
             isListening && "border-red-500/50 shadow-red-500/20"
           )}
         >
+          {/* Mode Selector Dropdown */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-12 px-3 rounded-xl hover:bg-secondary shrink-0 gap-2"
+              >
+                {mode === "task" ? (
+                  <>
+                    <Zap className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-medium">Task</span>
+                  </>
+                ) : (
+                  <>
+                    <Users className="w-4 h-4 text-green-500" />
+                    <span className="text-sm font-medium">Recruiter</span>
+                  </>
+                )}
+                <ChevronDown className="w-4 h-4 text-muted-foreground" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-48">
+              <DropdownMenuItem
+                onClick={() => setMode("task")}
+                className="gap-2 cursor-pointer"
+              >
+                <Zap className="w-4 h-4 text-primary" />
+                <div className="flex flex-col">
+                  <span className="font-medium">Task Mode</span>
+                  <span className="text-xs text-muted-foreground">
+                    Outreach & automation
+                  </span>
+                </div>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setMode("recruiter")}
+                className="gap-2 cursor-pointer"
+              >
+                <Users className="w-4 h-4 text-green-500" />
+                <div className="flex flex-col">
+                  <span className="font-medium">Recruiter Mode</span>
+                  <span className="text-xs text-muted-foreground">
+                    Find GitHub talent
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Divider */}
+          <div className="h-8 w-px bg-border/50" />
+
           {/* Mic Button */}
           <Button
             type="button"
@@ -297,7 +358,7 @@ export function HeroInput() {
             onFocus={() => setIsFocused(true)}
             onBlur={() => setTimeout(() => setIsFocused(false), 200)}
             onKeyDown={(e) => e.key === "Enter" && !showAssetPicker && handleSubmit(e)}
-            placeholder={isListening ? "Listening..." : "Describe your mission... (type # for assets)"}
+            placeholder={isListening ? "Listening..." : mode === "recruiter" ? "Find Python developers with Django experience..." : "Describe your mission... (type # for assets)"}
             className={cn(
               "flex-1 bg-transparent text-lg text-foreground placeholder:text-muted-foreground/70 focus:outline-none py-3",
               isListening && "placeholder:text-red-400"

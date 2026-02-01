@@ -250,6 +250,11 @@ export default function MissionChat() {
                     return; // Don't add to chat messages, LiveBrain handles these
                 }
 
+                // Skip stats_update messages (they're for LiveBrain only)
+                if (data.type === "stats_update") {
+                    return;
+                }
+
                 setMessages(prev => [...prev, {
                     id: `ws-${Date.now()}`,
                     role: "agent",
@@ -539,7 +544,14 @@ export default function MissionChat() {
         if (!userProfile) return false;
         if (tool === "gmail" || tool === "email") return !!userProfile.gmail_connection_id;
         if (tool === "slack") return !!userProfile.slack_connection_id;
-        return !!(userProfile.other_connections && userProfile.other_connections[tool]);
+        
+        // For other connections, check if the connection ID exists
+        const hasConnection = !!(userProfile.other_connections && userProfile.other_connections[tool]);
+        
+        // Additional check: if connection exists but might be stale, we should verify
+        // For now, we'll trust the connection ID exists means it's connected
+        // TODO: Add real-time verification with Composio API
+        return hasConnection;
     };
 
     return (
@@ -605,7 +617,7 @@ export default function MissionChat() {
                                         : "bg-card border border-border"
                             )}>
                                 {message.role === "agent" || message.role === "system" ? (
-                                    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 text-white prose-p:text-white prose-li:text-white prose-headings:text-white">
+                                    <div className="text-sm prose prose-sm dark:prose-invert max-w-none prose-p:my-2 prose-pre:my-2 prose-ul:my-2 prose-ol:my-2 text-foreground prose-p:text-foreground prose-li:text-foreground prose-headings:text-foreground prose-a:text-blue-400 prose-a:no-underline hover:prose-a:text-blue-300 hover:prose-a:underline prose-strong:text-foreground">
                                         <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                             {message.content}
                                         </ReactMarkdown>
@@ -627,7 +639,8 @@ export default function MissionChat() {
 
                                     if (toolMatch) {
                                         const displayName = toolMatch.split('_').map((w: string) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-                                        const connected = isConnected(toolMatch);
+                                        // If there's a connect_url, backend is asking to connect - override isConnected check
+                                        const connected = connectUrl ? false : isConnected(toolMatch);
 
                                         return (
                                             <div className="mt-3">

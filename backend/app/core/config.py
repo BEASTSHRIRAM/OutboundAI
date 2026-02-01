@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     FIRECRAWL_API_KEY: Optional[str] = None
     COMPOSIO_API_KEY: Optional[str] = None
     COMPOSIO_AUTH_CONFIG_ID: Optional[str] = None
+    
+    # Search Agent API Keys
+    OPENAI_API_KEY: Optional[str] = None
+    EXA_API_KEY: Optional[str] = None
+    HUNTER_API_KEY: Optional[str] = None
+    APIFY_API_TOKEN: Optional[str] = None
+    
+    # Recruiter Agent
+    GITHUB_TOKEN: Optional[str] = None
+    
+    # Recruiter Agent
+    GITHUB_TOKEN: Optional[str] = None
 
     # Neo4j Settings
     NEO4J_URI: Optional[str] = None
