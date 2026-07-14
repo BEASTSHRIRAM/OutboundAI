@@ -169,7 +169,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="h-full overflow-auto p-6 space-y-6">
+    <div className="mx-auto w-full max-w-[1600px] space-y-6 p-4 md:p-6 lg:p-8">
       <div className="bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/20 rounded-lg p-6">
         <div className="flex items-center justify-between gap-4">
           <div>

@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
         from app.services.followup_scheduler import start_scheduler
         start_scheduler()
 
-    if settings.MONGODB_URI:
+    elif settings.MONGODB_URI:
         client = AsyncIOMotorClient(
             settings.MONGODB_URI,
             tlsAllowInvalidCertificates=True,

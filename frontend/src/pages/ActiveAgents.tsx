@@ -163,7 +163,7 @@ export default function ActiveAgents() {
   };
 
   return (
-    <div className="h-full overflow-auto bg-black/50 p-4 backdrop-blur-sm md:p-6 lg:p-8">
+    <div className="mx-auto w-full max-w-[1600px] space-y-6 p-4 md:p-6 lg:p-8">
       {/* Header */}
       <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
         <div>
