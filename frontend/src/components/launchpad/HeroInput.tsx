@@ -320,14 +320,26 @@ export function HeroInput() {
               />
               <div className="flex items-center gap-1 border-l border-border/50 pl-2">
                 <MapPin className="w-4 h-4 text-muted-foreground" />
-                <input
-                  type="text"
+                <select
                   value={location}
                   onChange={(e) => setLocation(e.target.value)}
-                  placeholder="Location (Optional)"
-                  className="w-full md:w-32 bg-transparent py-2.5 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none"
-                  onKeyDown={(e) => e.key === "Enter" && !showAssetPicker && handleSubmit(e)}
-                />
+                  className="w-full md:w-36 bg-transparent py-2.5 text-sm text-foreground appearance-none focus:outline-none cursor-pointer"
+                >
+                  <option value="" className="bg-zinc-900">Location (Any)</option>
+                  <optgroup label="Regions" className="bg-zinc-900 text-muted-foreground">
+                    <option value="North America" className="text-foreground">North America</option>
+                    <option value="Europe" className="text-foreground">Europe</option>
+                    <option value="APAC" className="text-foreground">APAC</option>
+                    <option value="LATAM" className="text-foreground">LATAM</option>
+                  </optgroup>
+                  <optgroup label="Tech Hubs" className="bg-zinc-900 text-muted-foreground">
+                    <option value="San Francisco, CA" className="text-foreground">San Francisco, CA</option>
+                    <option value="New York, NY" className="text-foreground">New York, NY</option>
+                    <option value="London, UK" className="text-foreground">London, UK</option>
+                    <option value="Berlin, Germany" className="text-foreground">Berlin, Germany</option>
+                    <option value="Singapore" className="text-foreground">Singapore</option>
+                  </optgroup>
+                </select>
               </div>
             </div>
           </div>

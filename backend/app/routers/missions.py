@@ -479,7 +479,7 @@ Set ready=false if recipient email is unclear.{rag_injection}"""),
         await MissionLog(mission_id=mission_id, role="agent", content=error_msg, log_type="error").insert()
         return {"handled": True, "error": str(e)}
 
-@router.post("/", response_model=Mission)
+@router.post("/")
 async def create_mission(
     mission_in: MissionCreate,
     user: User = Depends(get_current_user),
@@ -504,12 +504,14 @@ async def create_mission(
             content="Mission queued in local SQL mode.",
             log_type="thinking",
         )
-        return Mission(
-            user_id=mission.user_id,
-            objective=mission.objective,
-            status=mission.status,
-            created_at=mission.created_at,
-        )
+        return {
+            "id": str(mission.id),
+            "_id": str(mission.id),
+            "user_id": mission.user_id,
+            "objective": mission.objective,
+            "status": mission.status,
+            "created_at": mission.created_at.isoformat()
+        }
 
     mission = Mission(user_id=user.clerk_id, objective=mission_in.objective)
     await mission.insert()
