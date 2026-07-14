@@ -146,7 +146,7 @@ export default function Profile() {
                                 <div>
                                     <label className="text-sm text-zinc-500 block mb-1">Authentication Method</label>
                                     <div className="flex gap-2">
-                                        {user.externalAccounts.length > 0 ? (
+                                        {(user?.externalAccounts?.length || 0) > 0 ? (
                                             user.externalAccounts.map(acc => (
                                                 <Badge key={acc.id} variant="secondary" className="bg-white/10 text-zinc-300 hover:bg-white/20 capitalize">
                                                     {acc.providerTitle || "External"}

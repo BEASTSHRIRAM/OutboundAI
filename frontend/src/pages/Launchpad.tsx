@@ -112,7 +112,7 @@ const Launchpad = () => {
   };
 
   return (
-    <div className="mx-auto min-h-full max-w-[1600px] space-y-10 p-4 sm:p-6 lg:space-y-12 lg:p-8">
+    <div className="mx-auto w-full max-w-[1600px] space-y-8 p-4 md:p-6 lg:p-8">
       {/* Hero Section */}
       <section className="relative pb-4 pt-6 lg:pt-8">
         <div className="relative z-10 mb-10 text-center lg:mb-12">

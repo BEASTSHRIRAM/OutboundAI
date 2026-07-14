@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Loader2, Mic, MicOff, Paperclip, ArrowRight } from "lucide-react";
+import { Loader2, Mic, MicOff, Paperclip, ArrowRight, MapPin } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useApi } from "@/lib/api";
@@ -25,6 +25,7 @@ declare global {
 
 export function HeroInput() {
   const [query, setQuery] = useState("");
+  const [location, setLocation] = useState("");
   const [isFocused, setIsFocused] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -189,7 +190,7 @@ export function HeroInput() {
         }));
         
         // Create mission
-        const mission = await api.createMission(objective, attachments, isAutonomous);
+        const mission = await api.createMission(objective, attachments, isAutonomous, location);
         
         setQuery("");
         setSelectedAttachments([]);
@@ -298,24 +299,49 @@ export function HeroInput() {
             >
               {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
             </Button>
-
-            <input
-              type="text"
-              value={query}
-              onChange={handleInputChange}
-              onFocus={() => setIsFocused(true)}
-              onBlur={() => setTimeout(() => setIsFocused(false), 200)}
-              onKeyDown={(e) => e.key === "Enter" && !showAssetPicker && handleSubmit(e)}
-              placeholder={
-                isListening 
-                  ? "Listening..." 
-                  : "Describe your task... (type # for assets)"
-              }
-              className={cn(
-                "min-w-0 flex-1 bg-transparent py-2.5 pr-1 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none md:text-base",
-                isListening && "placeholder:text-red-400"
-              )}
-            />
+            
+            <div className="flex flex-col min-w-0 flex-1 md:flex-row gap-2">
+              <input
+                type="text"
+                value={query}
+                onChange={handleInputChange}
+                onFocus={() => setIsFocused(true)}
+                onBlur={() => setTimeout(() => setIsFocused(false), 200)}
+                onKeyDown={(e) => e.key === "Enter" && !showAssetPicker && handleSubmit(e)}
+                placeholder={
+                  isListening 
+                    ? "Listening..." 
+                    : "Describe your task... (type # for assets)"
+                }
+                className={cn(
+                  "min-w-0 flex-1 bg-transparent py-2.5 pr-1 text-sm text-foreground placeholder:text-muted-foreground/70 focus:outline-none md:text-base",
+                  isListening && "placeholder:text-red-400"
+                )}
+              />
+              <div className="flex items-center gap-1 border-l border-border/50 pl-2">
+                <MapPin className="w-4 h-4 text-muted-foreground" />
+                <select
+                  value={location}
+                  onChange={(e) => setLocation(e.target.value)}
+                  className="w-full md:w-36 bg-transparent py-2.5 text-sm text-foreground appearance-none focus:outline-none cursor-pointer"
+                >
+                  <option value="" className="bg-zinc-900">Location (Any)</option>
+                  <optgroup label="Regions" className="bg-zinc-900 text-muted-foreground">
+                    <option value="North America" className="text-foreground">North America</option>
+                    <option value="Europe" className="text-foreground">Europe</option>
+                    <option value="APAC" className="text-foreground">APAC</option>
+                    <option value="LATAM" className="text-foreground">LATAM</option>
+                  </optgroup>
+                  <optgroup label="Tech Hubs" className="bg-zinc-900 text-muted-foreground">
+                    <option value="San Francisco, CA" className="text-foreground">San Francisco, CA</option>
+                    <option value="New York, NY" className="text-foreground">New York, NY</option>
+                    <option value="London, UK" className="text-foreground">London, UK</option>
+                    <option value="Berlin, Germany" className="text-foreground">Berlin, Germany</option>
+                    <option value="Singapore" className="text-foreground">Singapore</option>
+                  </optgroup>
+                </select>
+              </div>
+            </div>
           </div>
 
           <Button
